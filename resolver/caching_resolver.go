@@ -215,7 +215,9 @@ func (r *CachingResolver) Resolve(ctx context.Context, request *model.Request) (
 
 		val, ttl := r.getFromCache(logger, cacheKey)
 
-		if val != nil {
+		if request.RefreshCache {
+			logger.Debug("Forcing refresh from cache")
+		} else if val != nil {
 			logger.Debug("domain is cached")
 
 			val.SetRcode(request.Req, val.Rcode)

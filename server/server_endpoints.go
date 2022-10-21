@@ -34,20 +34,20 @@ const (
 	yamlContentType    = "text/yaml"
 )
 
-type ApiResponseWriter struct {
+type APIResponseWriter struct {
 	ip string
 }
 
-func (r *ApiResponseWriter) RemoteAddr() net.Addr {
+func (r *APIResponseWriter) RemoteAddr() net.Addr {
 	return &net.TCPAddr{IP: net.ParseIP(r.ip)}
 }
-func (r *ApiResponseWriter) LocalAddr() net.Addr       { return nil }
-func (r *ApiResponseWriter) WriteMsg(m *dns.Msg) error { return nil }
-func (r *ApiResponseWriter) Write([]byte) (int, error) { return 0, nil }
-func (r *ApiResponseWriter) Close() error              { return nil }
-func (r *ApiResponseWriter) TsigStatus() error         { return nil }
-func (r *ApiResponseWriter) TsigTimersOnly(bool)       {}
-func (r *ApiResponseWriter) Hijack()                   {}
+func (r *APIResponseWriter) LocalAddr() net.Addr       { return nil }
+func (r *APIResponseWriter) WriteMsg(m *dns.Msg) error { return nil }
+func (r *APIResponseWriter) Write([]byte) (int, error) { return 0, nil }
+func (r *APIResponseWriter) Close() error              { return nil }
+func (r *APIResponseWriter) TsigStatus() error         { return nil }
+func (r *APIResponseWriter) TsigTimersOnly(bool)       {}
+func (r *APIResponseWriter) Hijack()                   {}
 
 func secureHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +146,12 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, httpRe
 		return
 	}
 
-	ctx, dnsReq := newRequestFromHTTP(httpReq.Context(), httpReq, msg)
+	clientID := chi.URLParam(req, "clientID")
+	if clientID == "" {
+		clientID = extractClientIDFromHost(req.Host)
+	}
+
+	ctx, dnsReq := newRequestFromHTTP(httpReq.Context(), httpReq, msg, false)
 
 	s.handleReq(ctx, dnsReq, httpMsgWriter{rw})
 }
@@ -209,7 +214,6 @@ func (s *Server) Query(
 // @Router /query [post]
 func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	var queryRequest api.QueryRequest
-	var apirw ApiResponseWriter
 
 	rw.Header().Set(contentTypeHeader, jsonContentType)
 
@@ -229,30 +233,20 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	query := queryRequest.Query
+	query := formatQuery(queryRequest)
+	apirw, err := getAPIResponse(queryRequest, req)
 
-	// append dot
-	if !strings.HasSuffix(query, ".") {
-		query += "."
-	}
+	if err != nil {
+		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
 
-	useRemoteAdress := queryRequest.UseRemoteAddress
-	if useRemoteAdress {
-		remoteAddr, _, err := net.SplitHostPort(req.RemoteAddr)
-		if err != nil {
-			logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
-			return
-		} else {
-			apirw = ApiResponseWriter{ip: remoteAddr}
-		}
-	} else if queryRequest.RemoteAddress != "" {
-		apirw = ApiResponseWriter{ip: queryRequest.RemoteAddress}
+		return
 	}
 
 	dnsRequest := util.NewMsgWithQuestion(query, qType)
-	r := createResolverRequest(&apirw, dnsRequest)
+	r := createResolverRequest(&apirw, dnsRequest, queryRequest.RefreshCache)
 
 	response, err := s.queryResolver.Resolve(r)
+
 	if err != nil {
 		logAndResponseWithError(err, "unable to process query: ", rw)
 
@@ -274,6 +268,25 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	_, err = rw.Write(jsonResponse)
 	logAndResponseWithError(err, "unable to write response: ", rw)
 }
+
+func createHTTPRouter(cfg *config.Config, openAPIImpl api.StrictServerInterface) *chi.Mux {
+	router := chi.NewRouter()
+
+	api.RegisterOpenAPIEndpoints(router, openAPIImpl)
+
+	configureDebugHandler(router)
+
+	configureDocsHandler(router)
+
+	configureStaticAssetsHandler(router)
+
+	configureRootHandler(cfg, router)
+
+	metrics.Start(router, cfg.Prometheus)
+
+	return router
+}
+
 
 func createHTTPRouter(cfg *config.Config, openAPIImpl api.StrictServerInterface) *chi.Mux {
 	router := chi.NewRouter()
