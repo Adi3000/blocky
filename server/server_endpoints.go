@@ -133,7 +133,7 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, req *h
 		clientID = extractClientIDFromHost(req.Host)
 	}
 
-	r := newRequest(net.ParseIP(extractIP(req)), model.RequestProtocolTCP, clientID, msg)
+	r := newRequest(net.ParseIP(extractIP(req)), model.RequestProtocolTCP, clientID, msg, false)
 
 	resResponse, err := s.queryResolver.Resolve(r)
 
@@ -233,7 +233,7 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	dnsRequest := util.NewMsgWithQuestion(query, qType)
-	r := createResolverRequest(&apirw, dnsRequest)
+	r := createResolverRequest(&apirw, dnsRequest, queryRequest.RefreshCache)
 
 	response, err := s.queryResolver.Resolve(r)
 
