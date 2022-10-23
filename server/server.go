@@ -565,7 +565,7 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-func createResolverRequest(rw dns.ResponseWriter, request *dns.Msg, refreshCache bool) *model.Request {
+func createResolverRequest(rw dns.ResponseWriter, request *dns.Msg) *model.Request {
 	var hostName string
 
 	var remoteAddr net.Addr
@@ -581,7 +581,7 @@ func createResolverRequest(rw dns.ResponseWriter, request *dns.Msg, refreshCache
 		hostName = con.ConnectionState().ServerName
 	}
 
-	return newRequest(clientIP, protocol, extractClientIDFromHost(hostName), request, refreshCache)
+	return newRequest(clientIP, protocol, extractClientIDFromHost(hostName), request)
 }
 
 func extractClientIDFromHost(hostName string) string {
@@ -594,7 +594,7 @@ func extractClientIDFromHost(hostName string) string {
 }
 
 func newRequest(clientIP net.IP, protocol model.RequestProtocol,
-	requestClientID string, request *dns.Msg, refreshCache bool) *model.Request {
+	requestClientID string, request *dns.Msg) *model.Request {
 	return &model.Request{
 		ClientIP:        clientIP,
 		RequestClientID: requestClientID,
@@ -604,8 +604,7 @@ func newRequest(clientIP net.IP, protocol model.RequestProtocol,
 			"question":  util.QuestionToString(request.Question),
 			"client_ip": clientIP,
 		}),
-		RequestTS:    time.Now(),
-		RefreshCache: refreshCache,
+		RequestTS: time.Now(),
 	}
 }
 
@@ -613,7 +612,7 @@ func newRequest(clientIP net.IP, protocol model.RequestProtocol,
 func (s *Server) OnRequest(w dns.ResponseWriter, request *dns.Msg) {
 	logger().Debug("new request")
 
-	r := createResolverRequest(w, request, false)
+	r := createResolverRequest(w, request)
 
 	response, err := s.queryResolver.Resolve(r)
 

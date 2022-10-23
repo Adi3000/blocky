@@ -172,9 +172,7 @@ func (r *CachingResolver) Resolve(request *model.Request) (response *model.Respo
 
 		val, ttl := r.resultCache.Get(cacheKey)
 
-		if request.RefreshCache {
-			logger.Debug("Forcing refresh from cache")
-		} else if val != nil {
+		if val != nil {
 			logger.Debug("domain is cached")
 
 			evt.Bus().Publish(evt.CachingResultCacheHit, domain)
