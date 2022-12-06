@@ -33,6 +33,21 @@ const (
 	corsMaxAge        = 5 * time.Minute
 )
 
+type APIResponseWriter struct {
+	ip string
+}
+
+func (r *APIResponseWriter) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP(r.ip)}
+}
+func (r *APIResponseWriter) LocalAddr() net.Addr       { return nil }
+func (r *APIResponseWriter) WriteMsg(m *dns.Msg) error { return nil }
+func (r *APIResponseWriter) Write([]byte) (int, error) { return 0, nil }
+func (r *APIResponseWriter) Close() error              { return nil }
+func (r *APIResponseWriter) TsigStatus() error         { return nil }
+func (r *APIResponseWriter) TsigTimersOnly(bool)       {}
+func (r *APIResponseWriter) Hijack()                   {}
+
 func secureHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("strict-transport-security", "max-age=63072000")
@@ -118,7 +133,7 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, req *h
 		clientID = extractClientIDFromHost(req.Host)
 	}
 
-	r := newRequest(net.ParseIP(extractIP(req)), model.RequestProtocolTCP, clientID, msg)
+	r := newRequest(net.ParseIP(extractIP(req)), model.RequestProtocolTCP, clientID, msg, false)
 
 	resResponse, err := s.queryResolver.Resolve(r)
 
@@ -177,6 +192,8 @@ func extractIP(r *http.Request) string {
 func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	var queryRequest api.QueryRequest
 
+	var apirw APIResponseWriter
+
 	rw.Header().Set(contentTypeHeader, jsonContentType)
 
 	err := json.NewDecoder(req.Body).Decode(&queryRequest)
@@ -203,8 +220,23 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 		query += "."
 	}
 
+	useRemoteAdress := queryRequest.UseRemoteAddress
+	if useRemoteAdress {
+		remoteAddr, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
+
+			return
+		}
+
+		apirw = APIResponseWriter{ip: remoteAddr}
+
+	} else if queryRequest.RemoteAddress != "" {
+		apirw = APIResponseWriter{ip: queryRequest.RemoteAddress}
+	}
+
 	dnsRequest := util.NewMsgWithQuestion(query, qType)
-	r := createResolverRequest(nil, dnsRequest)
+	r := createResolverRequest(&apirw, dnsRequest, queryRequest.RefreshCache)
 
 	response, err := s.queryResolver.Resolve(r)
 
