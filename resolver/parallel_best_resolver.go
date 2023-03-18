@@ -200,7 +200,9 @@ func (r *ParallelBestResolver) DisableClientDNSResolver(duration time.Duration, 
 	dnsStatus.disableEnd = time.Now().Add(duration)
 
 	if duration == 0 {
-		log.Log().Infof("disable blocking with specific dns for group(s) '%s'", log.EscapeInput(strings.Join(dnsStatus.disabledGroups, "; ")))
+		log.Log().Infof(
+			"disable blocking with specific dns for group(s) '%s'",
+			log.EscapeInput(strings.Join(dnsStatus.disabledGroups, "; ")))
 	} else {
 		log.Log().Infof("disable blocking with specific dns for %s for group(s) '%s'", duration,
 			log.EscapeInput(strings.Join(dnsStatus.disabledGroups, "; ")))
@@ -232,7 +234,6 @@ func (r *ParallelBestResolver) filterClientsForResolver(clientNames []string) (f
 }
 
 func (r *ParallelBestResolver) resolversForClient(request *model.Request) (result []*upstreamResolverStatus) {
-
 	overridedClientNames := r.filterClientsForResolver(request.ClientNames)
 	// try client names
 	for _, cName := range overridedClientNames {
