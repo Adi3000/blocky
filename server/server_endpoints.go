@@ -223,11 +223,12 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	useRemoteAdress := queryRequest.UseRemoteAddress
 	if useRemoteAdress {
 		remoteAddr, _, err := net.SplitHostPort(req.RemoteAddr)
-		apirw = APIResponseWriter{ip: remoteAddr}
 		if err != nil {
 			logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
 
 			return
+		} else {
+			apirw = APIResponseWriter{ip: remoteAddr}
 		}
 	} else if queryRequest.RemoteAddress != "" {
 		apirw = APIResponseWriter{ip: queryRequest.RemoteAddress}
