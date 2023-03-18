@@ -228,11 +228,10 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 
 			return
 		}
-
 		apirw = APIResponseWriter{ip: remoteAddr}
-
 	} else if queryRequest.RemoteAddress != "" {
 		apirw = APIResponseWriter{ip: queryRequest.RemoteAddress}
+
 	}
 
 	dnsRequest := util.NewMsgWithQuestion(query, qType)
