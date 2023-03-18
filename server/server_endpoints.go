@@ -33,6 +33,21 @@ const (
 	corsMaxAge        = 5 * time.Minute
 )
 
+type APIResponseWriter struct {
+	ip string
+}
+
+func (r *APIResponseWriter) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP(r.ip)}
+}
+func (r *APIResponseWriter) LocalAddr() net.Addr       { return nil }
+func (r *APIResponseWriter) WriteMsg(m *dns.Msg) error { return nil }
+func (r *APIResponseWriter) Write([]byte) (int, error) { return 0, nil }
+func (r *APIResponseWriter) Close() error              { return nil }
+func (r *APIResponseWriter) TsigStatus() error         { return nil }
+func (r *APIResponseWriter) TsigTimersOnly(bool)       {}
+func (r *APIResponseWriter) Hijack()                   {}
+
 func secureHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("strict-transport-security", "max-age=63072000")
@@ -118,7 +133,7 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, req *h
 		clientID = extractClientIDFromHost(req.Host)
 	}
 
-	r := newRequest(net.ParseIP(extractIP(req)), model.RequestProtocolTCP, clientID, msg)
+	r := newRequest(net.ParseIP(extractIP(req)), model.RequestProtocolTCP, clientID, msg, false)
 
 	resResponse, err := s.queryResolver.Resolve(r)
 
@@ -196,15 +211,17 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	query := queryRequest.Query
+	query := formatQuery(queryRequest)
+	apirw, err := getAPIResponse(queryRequest, req)
 
-	// append dot
-	if !strings.HasSuffix(query, ".") {
-		query += "."
+	if err != nil {
+		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
+
+		return
 	}
 
 	dnsRequest := util.NewMsgWithQuestion(query, qType)
-	r := createResolverRequest(nil, dnsRequest)
+	r := createResolverRequest(&apirw, dnsRequest, queryRequest.RefreshCache)
 
 	response, err := s.queryResolver.Resolve(r)
 
@@ -229,6 +246,30 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 
 	_, err = rw.Write(jsonResponse)
 	logAndResponseWithError(err, "unable to write response: ", rw)
+}
+
+func formatQuery(queryRequest api.QueryRequest) (query string) {
+	query = queryRequest.Query
+
+	// append dot
+	if !strings.HasSuffix(query, ".") {
+		query += "."
+	}
+
+	return query
+}
+
+func getAPIResponse(queryRequest api.QueryRequest, req *http.Request) (apirw APIResponseWriter, err error) {
+	var remoteAddr string = queryRequest.RemoteAddress
+	if queryRequest.UseRemoteAddress {
+		remoteAddr, _, err = net.SplitHostPort(req.RemoteAddr)
+	} else if queryRequest.RemoteAddress == "" {
+		return
+	}
+
+	apirw = APIResponseWriter{ip: remoteAddr}
+
+	return apirw, err
 }
 
 func createHTTPSRouter(cfg *config.Config) *chi.Mux {
