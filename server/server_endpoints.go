@@ -192,8 +192,6 @@ func extractIP(r *http.Request) string {
 func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	var queryRequest api.QueryRequest
 
-	var apirw APIResponseWriter
-
 	rw.Header().Set(contentTypeHeader, jsonContentType)
 
 	err := json.NewDecoder(req.Body).Decode(&queryRequest)
@@ -213,23 +211,13 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	query := queryRequest.Query
+	query := formatQuery(queryRequest)
+	apirw, err := getApiResponse(queryRequest, rw, req)
 
-	// append dot
-	if !strings.HasSuffix(query, ".") {
-		query += "."
-	}
+	if err != nil {
+		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
 
-	useRemoteAdress := queryRequest.UseRemoteAddress
-	if useRemoteAdress {
-		apirw, err = createResponseFromRemoteAddress(rw, req)
-		if err != nil {
-			logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
-
-			return
-		}
-	} else if queryRequest.RemoteAddress != "" {
-		apirw = APIResponseWriter{ip: queryRequest.RemoteAddress}
+		return
 	}
 
 	dnsRequest := util.NewMsgWithQuestion(query, qType)
@@ -260,13 +248,26 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	logAndResponseWithError(err, "unable to write response: ", rw)
 }
 
-func createResponseFromRemoteAddress(rw http.ResponseWriter, req *http.Request) (apirw APIResponseWriter, err error) {
-	remoteAddr, _, err := net.SplitHostPort(req.RemoteAddr)
-	if err != nil {
-		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
-	} else {
-		apirw = APIResponseWriter{ip: remoteAddr}
+func formatQuery(queryRequest api.QueryRequest) (query string) {
+	query = queryRequest.Query
+
+	// append dot
+	if !strings.HasSuffix(query, ".") {
+		query += "."
 	}
+
+	return query
+}
+
+func getApiResponse(queryRequest api.QueryRequest, rw http.ResponseWriter, req *http.Request) (apirw APIResponseWriter, err error) {
+	var remoteAddr string = queryRequest.RemoteAddress
+	if queryRequest.UseRemoteAddress {
+		remoteAddr, _, err = net.SplitHostPort(req.RemoteAddr)
+	} else if queryRequest.RemoteAddress == "" {
+		return
+	}
+
+	apirw = APIResponseWriter{ip: remoteAddr}
 
 	return apirw, err
 }
