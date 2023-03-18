@@ -34,6 +34,31 @@ const (
 	yamlContentType    = "text/yaml"
 )
 
+type ApiResponseWriter struct {
+	ip string
+}
+
+func (r *ApiResponseWriter) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP(r.ip)}
+}
+func (r *ApiResponseWriter) LocalAddr() net.Addr       { return nil }
+func (r *ApiResponseWriter) WriteMsg(m *dns.Msg) error { return nil }
+func (r *ApiResponseWriter) Write([]byte) (int, error) { return 0, nil }
+func (r *ApiResponseWriter) Close() error              { return nil }
+func (r *ApiResponseWriter) TsigStatus() error         { return nil }
+func (r *ApiResponseWriter) TsigTimersOnly(bool)       {}
+func (r *ApiResponseWriter) Hijack()                   {}
+
+func secureHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("strict-transport-security", "max-age=63072000")
+		w.Header().Set("x-frame-options", "DENY")
+		w.Header().Set("x-content-type-options", "nosniff")
+		w.Header().Set("x-xss-protection", "1; mode=block")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) createOpenAPIInterfaceImpl() (impl api.StrictServerInterface, err error) {
 	bControl, err := resolver.GetFromChainWithType[api.BlockingControl](s.queryResolver)
 	if err != nil {
@@ -170,6 +195,84 @@ func (s *Server) Query(
 	ctx, req := newRequest(ctx, clientIP, clientID, model.RequestProtocolTCP, msg)
 
 	return s.resolve(ctx, req)
+}
+
+// apiQuery is the http endpoint to perform a DNS query
+// @Summary Performs DNS query
+// @Description Performs DNS query
+// @Tags query
+// @Accept  json
+// @Produce  json
+// @Param query body api.QueryRequest true "query data"
+// @Success 200 {object} api.QueryResult "query was executed"
+// @Failure 400   "Wrong request format"
+// @Router /query [post]
+func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
+	var queryRequest api.QueryRequest
+	var apirw ApiResponseWriter
+
+	rw.Header().Set(contentTypeHeader, jsonContentType)
+
+	err := json.NewDecoder(req.Body).Decode(&queryRequest)
+	if err != nil {
+		logAndResponseWithError(err, "can't read request: ", rw)
+
+		return
+	}
+
+	// validate query type
+	qType := dns.Type(dns.StringToType[queryRequest.Type])
+	if qType == dns.Type(dns.TypeNone) {
+		err = fmt.Errorf("unknown query type '%s'", queryRequest.Type)
+		logAndResponseWithError(err, "unknown query type: ", rw)
+
+		return
+	}
+
+	query := queryRequest.Query
+
+	// append dot
+	if !strings.HasSuffix(query, ".") {
+		query += "."
+	}
+
+	useRemoteAdress := queryRequest.UseRemoteAddress
+	if useRemoteAdress {
+		remoteAddr, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
+			return
+		} else {
+			apirw = ApiResponseWriter{ip: remoteAddr}
+		}
+	} else if queryRequest.RemoteAddress != "" {
+		apirw = ApiResponseWriter{ip: queryRequest.RemoteAddress}
+	}
+
+	dnsRequest := util.NewMsgWithQuestion(query, qType)
+	r := createResolverRequest(&apirw, dnsRequest)
+
+	response, err := s.queryResolver.Resolve(r)
+	if err != nil {
+		logAndResponseWithError(err, "unable to process query: ", rw)
+
+		return
+	}
+
+	jsonResponse, err := json.Marshal(api.QueryResult{
+		Reason:       response.Reason,
+		ResponseType: response.RType.String(),
+		Response:     util.AnswerToString(response.Res.Answer),
+		ReturnCode:   dns.RcodeToString[response.Res.Rcode],
+	})
+	if err != nil {
+		logAndResponseWithError(err, "unable to marshal response: ", rw)
+
+		return
+	}
+
+	_, err = rw.Write(jsonResponse)
+	logAndResponseWithError(err, "unable to write response: ", rw)
 }
 
 func createHTTPRouter(cfg *config.Config, openAPIImpl api.StrictServerInterface) *chi.Mux {
