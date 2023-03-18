@@ -212,7 +212,7 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	query := formatQuery(queryRequest)
-	apirw, err := getApiResponse(queryRequest, rw, req)
+	apirw, err := getAPIResponse(queryRequest, req)
 
 	if err != nil {
 		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
@@ -259,7 +259,7 @@ func formatQuery(queryRequest api.QueryRequest) (query string) {
 	return query
 }
 
-func getApiResponse(queryRequest api.QueryRequest, rw http.ResponseWriter, req *http.Request) (apirw APIResponseWriter, err error) {
+func getAPIResponse(queryRequest api.QueryRequest, req *http.Request) (apirw APIResponseWriter, err error) {
 	var remoteAddr string = queryRequest.RemoteAddress
 	if queryRequest.UseRemoteAddress {
 		remoteAddr, _, err = net.SplitHostPort(req.RemoteAddr)
