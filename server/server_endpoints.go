@@ -225,6 +225,7 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 		apirw, err = createResponseFromRemoteAddress(rw, req)
 		if err != nil {
 			logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
+
 			return
 		}
 	} else if queryRequest.RemoteAddress != "" {
@@ -259,7 +260,7 @@ func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
 	logAndResponseWithError(err, "unable to write response: ", rw)
 }
 
-func createResponseFromRemoteAddress(rw http.ResponseWriter, req *http.Request) (apirw APIResponseWriter, err error){
+func createResponseFromRemoteAddress(rw http.ResponseWriter, req *http.Request) (apirw APIResponseWriter, err error) {
 	remoteAddr, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err != nil {
 		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
