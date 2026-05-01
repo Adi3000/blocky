@@ -28,6 +28,15 @@ type ServerInterface interface {
 	// Clears the DNS response cache
 	// (POST /cache/flush)
 	CacheFlush(w http.ResponseWriter, r *http.Request)
+	// Disable client DNS resolver groups
+	// (GET /dns/disable)
+	DisableClientDNSResolver(w http.ResponseWriter, r *http.Request, params DisableClientDNSResolverParams)
+	// Enable client DNS resolver groups
+	// (GET /dns/enable)
+	EnableClientDNSResolver(w http.ResponseWriter, r *http.Request)
+	// Client DNS resolver status
+	// (GET /dns/status)
+	ClientDNSResolverStatus(w http.ResponseWriter, r *http.Request)
 	// List refresh
 	// (POST /lists/refresh)
 	ListRefresh(w http.ResponseWriter, r *http.Request)
@@ -61,6 +70,24 @@ func (_ Unimplemented) BlockingStatus(w http.ResponseWriter, r *http.Request) {
 // Clears the DNS response cache
 // (POST /cache/flush)
 func (_ Unimplemented) CacheFlush(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Disable client DNS resolver groups
+// (GET /dns/disable)
+func (_ Unimplemented) DisableClientDNSResolver(w http.ResponseWriter, r *http.Request, params DisableClientDNSResolverParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Enable client DNS resolver groups
+// (GET /dns/enable)
+func (_ Unimplemented) EnableClientDNSResolver(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Client DNS resolver status
+// (GET /dns/status)
+func (_ Unimplemented) ClientDNSResolverStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -153,6 +180,69 @@ func (siw *ServerInterfaceWrapper) CacheFlush(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CacheFlush(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DisableClientDNSResolver operation middleware
+func (siw *ServerInterfaceWrapper) DisableClientDNSResolver(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DisableClientDNSResolverParams
+
+	// ------------- Optional query parameter "duration" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "duration", r.URL.Query(), &params.Duration)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "duration", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "groups" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "groups", r.URL.Query(), &params.Groups)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "groups", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DisableClientDNSResolver(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EnableClientDNSResolver operation middleware
+func (siw *ServerInterfaceWrapper) EnableClientDNSResolver(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EnableClientDNSResolver(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ClientDNSResolverStatus operation middleware
+func (siw *ServerInterfaceWrapper) ClientDNSResolverStatus(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ClientDNSResolverStatus(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -316,6 +406,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/cache/flush", wrapper.CacheFlush)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/dns/disable", wrapper.DisableClientDNSResolver)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/dns/enable", wrapper.EnableClientDNSResolver)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/dns/status", wrapper.ClientDNSResolverStatus)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/lists/refresh", wrapper.ListRefresh)
 	})
 	r.Group(func(r chi.Router) {
@@ -397,6 +496,63 @@ func (response CacheFlush200Response) VisitCacheFlushResponse(w http.ResponseWri
 	return nil
 }
 
+type DisableClientDNSResolverRequestObject struct {
+	Params DisableClientDNSResolverParams
+}
+
+type DisableClientDNSResolverResponseObject interface {
+	VisitDisableClientDNSResolverResponse(w http.ResponseWriter) error
+}
+
+type DisableClientDNSResolver200Response struct {
+}
+
+func (response DisableClientDNSResolver200Response) VisitDisableClientDNSResolverResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type DisableClientDNSResolver400TextResponse string
+
+func (response DisableClientDNSResolver400TextResponse) VisitDisableClientDNSResolverResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(400)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type EnableClientDNSResolverRequestObject struct {
+}
+
+type EnableClientDNSResolverResponseObject interface {
+	VisitEnableClientDNSResolverResponse(w http.ResponseWriter) error
+}
+
+type EnableClientDNSResolver200Response struct {
+}
+
+func (response EnableClientDNSResolver200Response) VisitEnableClientDNSResolverResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type ClientDNSResolverStatusRequestObject struct {
+}
+
+type ClientDNSResolverStatusResponseObject interface {
+	VisitClientDNSResolverStatusResponse(w http.ResponseWriter) error
+}
+
+type ClientDNSResolverStatus200JSONResponse ApiBlockingStatus
+
+func (response ClientDNSResolverStatus200JSONResponse) VisitClientDNSResolverStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListRefreshRequestObject struct {
 }
 
@@ -463,6 +619,15 @@ type StrictServerInterface interface {
 	// Clears the DNS response cache
 	// (POST /cache/flush)
 	CacheFlush(ctx context.Context, request CacheFlushRequestObject) (CacheFlushResponseObject, error)
+	// Disable client DNS resolver groups
+	// (GET /dns/disable)
+	DisableClientDNSResolver(ctx context.Context, request DisableClientDNSResolverRequestObject) (DisableClientDNSResolverResponseObject, error)
+	// Enable client DNS resolver groups
+	// (GET /dns/enable)
+	EnableClientDNSResolver(ctx context.Context, request EnableClientDNSResolverRequestObject) (EnableClientDNSResolverResponseObject, error)
+	// Client DNS resolver status
+	// (GET /dns/status)
+	ClientDNSResolverStatus(ctx context.Context, request ClientDNSResolverStatusRequestObject) (ClientDNSResolverStatusResponseObject, error)
 	// List refresh
 	// (POST /lists/refresh)
 	ListRefresh(ctx context.Context, request ListRefreshRequestObject) (ListRefreshResponseObject, error)
@@ -591,6 +756,80 @@ func (sh *strictHandler) CacheFlush(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CacheFlushResponseObject); ok {
 		if err := validResponse.VisitCacheFlushResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DisableClientDNSResolver operation middleware
+func (sh *strictHandler) DisableClientDNSResolver(w http.ResponseWriter, r *http.Request, params DisableClientDNSResolverParams) {
+	var request DisableClientDNSResolverRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DisableClientDNSResolver(ctx, request.(DisableClientDNSResolverRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DisableClientDNSResolver")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DisableClientDNSResolverResponseObject); ok {
+		if err := validResponse.VisitDisableClientDNSResolverResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// EnableClientDNSResolver operation middleware
+func (sh *strictHandler) EnableClientDNSResolver(w http.ResponseWriter, r *http.Request) {
+	var request EnableClientDNSResolverRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.EnableClientDNSResolver(ctx, request.(EnableClientDNSResolverRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "EnableClientDNSResolver")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(EnableClientDNSResolverResponseObject); ok {
+		if err := validResponse.VisitEnableClientDNSResolverResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ClientDNSResolverStatus operation middleware
+func (sh *strictHandler) ClientDNSResolverStatus(w http.ResponseWriter, r *http.Request) {
+	var request ClientDNSResolverStatusRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ClientDNSResolverStatus(ctx, request.(ClientDNSResolverStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ClientDNSResolverStatus")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ClientDNSResolverStatusResponseObject); ok {
+		if err := validResponse.VisitClientDNSResolverStatusResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

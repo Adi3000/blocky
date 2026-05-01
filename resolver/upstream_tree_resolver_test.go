@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"time"
 
 	"github.com/0xERR0R/blocky/config"
 	. "github.com/0xERR0R/blocky/helpertest"
@@ -282,6 +283,76 @@ var _ = Describe("UpstreamTreeResolver", Label("upstreamTreeResolver"), func() {
 						))
 
 				Expect(hook.Messages).Should(ContainElement(ContainSubstring("client matches multiple groups")))
+			})
+
+			It("Should fall back to default if a matching client DNS resolver group is disabled", func() {
+				tree := sut.(*UpstreamTreeResolver)
+				Expect(tree.DisableClientDNSResolver(ctx, 0, []string{"laptop"})).Should(Succeed())
+
+				request := newRequestWithClient("example.com.", A, "192.168.178.55", "laptop")
+
+				Expect(sut.Resolve(ctx, request)).
+					Should(
+						SatisfyAll(
+							BeDNSRecord("example.com.", A, groups["default"]),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeSuccess),
+						))
+			})
+
+			It("Should fall back to default if a matching IP client DNS resolver group is disabled", func() {
+				tree := sut.(*UpstreamTreeResolver)
+				Expect(tree.DisableClientDNSResolver(ctx, 0, []string{"192.168.178.33"})).Should(Succeed())
+
+				request := newRequestWithClient("example.com.", A, "192.168.178.33", "noname")
+
+				Expect(sut.Resolve(ctx, request)).
+					Should(
+						SatisfyAll(
+							BeDNSRecord("example.com.", A, groups["default"]),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeSuccess),
+						))
+			})
+
+			It("Should disable all client-specific DNS resolver groups if no group is supplied", func() {
+				tree := sut.(*UpstreamTreeResolver)
+				Expect(tree.DisableClientDNSResolver(ctx, 0, nil)).Should(Succeed())
+
+				status := tree.ClientDNSResolverStatus()
+				Expect(status.Enabled).Should(BeFalse())
+				Expect(status.DisabledGroups).Should(ConsistOf(
+					"laptop",
+					"client-*-m",
+					"client[0-9]",
+					"192.168.178.33",
+					"10.43.8.67/28",
+					"name-matches1",
+					"name-matches*",
+				))
+
+				Expect(sut.Resolve(ctx, newRequestWithClient("example.com.", A, "10.43.8.70", "laptop"))).
+					Should(
+						SatisfyAll(
+							BeDNSRecord("example.com.", A, groups["default"]),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeSuccess),
+						))
+			})
+
+			It("Should reject unknown client DNS resolver groups", func() {
+				tree := sut.(*UpstreamTreeResolver)
+
+				Expect(tree.DisableClientDNSResolver(ctx, 0, []string{"unknown"})).
+					Should(MatchError("group 'unknown' is unknown"))
+			})
+
+			It("Should enable client DNS resolver groups again after duration", func() {
+				tree := sut.(*UpstreamTreeResolver)
+				Expect(tree.DisableClientDNSResolver(ctx, 10*time.Millisecond, []string{"laptop"})).Should(Succeed())
+				Eventually(func() bool {
+					return tree.ClientDNSResolverStatus().Enabled
+				}).Should(BeTrue())
 			})
 		})
 	})

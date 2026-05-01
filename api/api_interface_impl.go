@@ -38,6 +38,13 @@ type BlockingControl interface {
 	BlockingStatus() BlockingStatus
 }
 
+// ClientDNSResolverControl interface to control client-specific DNS resolver groups.
+type ClientDNSResolverControl interface {
+	EnableClientDNSResolver(ctx context.Context)
+	DisableClientDNSResolver(ctx context.Context, duration time.Duration, disableGroups []string) error
+	ClientDNSResolverStatus() BlockingStatus
+}
+
 // ListRefresher interface to control the list refresh
 type ListRefresher interface {
 	RefreshLists(ctx context.Context) error
@@ -69,18 +76,21 @@ func ctxWithHTTPRequestMiddleware(handler StrictHandlerFunc, operationID string)
 
 type OpenAPIInterfaceImpl struct {
 	control      BlockingControl
+	dnsControl   ClientDNSResolverControl
 	querier      Querier
 	refresher    ListRefresher
 	cacheControl CacheControl
 }
 
 func NewOpenAPIInterfaceImpl(control BlockingControl,
+	dnsControl ClientDNSResolverControl,
 	querier Querier,
 	refresher ListRefresher,
 	cacheControl CacheControl,
 ) *OpenAPIInterfaceImpl {
 	return &OpenAPIInterfaceImpl{
 		control:      control,
+		dnsControl:   dnsControl,
 		querier:      querier,
 		refresher:    refresher,
 		cacheControl: cacheControl,
@@ -124,21 +134,63 @@ func (i *OpenAPIInterfaceImpl) EnableBlocking(ctx context.Context, _ EnableBlock
 
 func (i *OpenAPIInterfaceImpl) BlockingStatus(_ context.Context, _ BlockingStatusRequestObject,
 ) (BlockingStatusResponseObject, error) {
-	blStatus := i.control.BlockingStatus()
+	return BlockingStatus200JSONResponse(statusToAPI(i.control.BlockingStatus())), nil
+}
 
+func (i *OpenAPIInterfaceImpl) DisableClientDNSResolver(ctx context.Context,
+	request DisableClientDNSResolverRequestObject,
+) (DisableClientDNSResolverResponseObject, error) {
+	var (
+		duration time.Duration
+		groups   []string
+		err      error
+	)
+
+	if request.Params.Duration != nil {
+		duration, err = time.ParseDuration(*request.Params.Duration)
+		if err != nil {
+			return DisableClientDNSResolver400TextResponse(log.EscapeInput(err.Error())), nil
+		}
+	}
+
+	if request.Params.Groups != nil && len(*request.Params.Groups) > 0 {
+		groups = strings.Split(*request.Params.Groups, ",")
+	}
+
+	err = i.dnsControl.DisableClientDNSResolver(ctx, duration, groups)
+	if err != nil {
+		return DisableClientDNSResolver400TextResponse(log.EscapeInput(err.Error())), nil
+	}
+
+	return DisableClientDNSResolver200Response{}, nil
+}
+
+func (i *OpenAPIInterfaceImpl) EnableClientDNSResolver(ctx context.Context, _ EnableClientDNSResolverRequestObject,
+) (EnableClientDNSResolverResponseObject, error) {
+	i.dnsControl.EnableClientDNSResolver(ctx)
+
+	return EnableClientDNSResolver200Response{}, nil
+}
+
+func (i *OpenAPIInterfaceImpl) ClientDNSResolverStatus(_ context.Context, _ ClientDNSResolverStatusRequestObject,
+) (ClientDNSResolverStatusResponseObject, error) {
+	return ClientDNSResolverStatus200JSONResponse(statusToAPI(i.dnsControl.ClientDNSResolverStatus())), nil
+}
+
+func statusToAPI(status BlockingStatus) ApiBlockingStatus {
 	result := ApiBlockingStatus{
-		Enabled: blStatus.Enabled,
+		Enabled: status.Enabled,
 	}
 
-	if blStatus.AutoEnableInSec > 0 {
-		result.AutoEnableInSec = &blStatus.AutoEnableInSec
+	if status.AutoEnableInSec > 0 {
+		result.AutoEnableInSec = &status.AutoEnableInSec
 	}
 
-	if len(blStatus.DisabledGroups) > 0 {
-		result.DisabledGroups = &blStatus.DisabledGroups
+	if len(status.DisabledGroups) > 0 {
+		result.DisabledGroups = &status.DisabledGroups
 	}
 
-	return BlockingStatus200JSONResponse(result), nil
+	return result
 }
 
 func (i *OpenAPIInterfaceImpl) ListRefresh(ctx context.Context,

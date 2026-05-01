@@ -122,7 +122,12 @@ func GetFromChainWithType[T any](resolver ChainedResolver) (result T, err error)
 			return result, nil
 		}
 
-		if cr, ok := resolver.GetNext().(ChainedResolver); ok {
+		next := resolver.GetNext()
+		if result, found := next.(T); found {
+			return result, nil
+		}
+
+		if cr, ok := next.(ChainedResolver); ok {
 			resolver = cr
 		} else {
 			break

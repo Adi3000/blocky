@@ -136,6 +136,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.BlockingStatus'
+  /dns/disable:
+    get:
+      operationId: disableClientDNSResolver
+      tags:
+        - dns
+      summary: Disable client DNS resolver groups
+      description: disable client-specific upstream resolver groups and fall back to the default upstream group
+      parameters:
+        - name: duration
+          in: query
+          description: 'duration of disabling (Example: 300s, 5m, 1h, 5m30s)'
+          schema:
+            type: string
+        - name: groups
+          in: query
+          description: groups to disable (comma separated). If empty, disable all client-specific groups
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Client-specific DNS resolver groups are disabled
+        '400':
+          description: Bad request (e.g. unknown group)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Bad request
+  /dns/enable:
+    get:
+      operationId: enableClientDNSResolver
+      tags:
+        - dns
+      summary: Enable client DNS resolver groups
+      description: enable client-specific upstream resolver groups
+      responses:
+        '200':
+          description: Client-specific DNS resolver groups are enabled
+  /dns/status:
+    get:
+      operationId: clientDNSResolverStatus
+      tags:
+        - dns
+      summary: Client DNS resolver status
+      description: get current client-specific upstream resolver group status
+      responses:
+        '200':
+          description: Returns current client-specific DNS resolver status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.BlockingStatus'
   /lists/refresh:
     post:
       operationId: listRefresh

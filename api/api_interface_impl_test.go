@@ -20,6 +20,7 @@ import (
 var _ = Describe("API implementation tests", func() {
 	var (
 		blockingControlMock *MockBlockingControl
+		dnsControlMock      *MockClientDNSResolverControl
 		querierMock         *MockQuerier
 		listRefreshMock     *MockListRefresher
 		cacheControlMock    *MockCacheControl
@@ -34,10 +35,11 @@ var _ = Describe("API implementation tests", func() {
 		DeferCleanup(cancelFn)
 
 		blockingControlMock = NewMockBlockingControl(GinkgoT())
+		dnsControlMock = NewMockClientDNSResolverControl(GinkgoT())
 		querierMock = NewMockQuerier(GinkgoT())
 		listRefreshMock = NewMockListRefresher(GinkgoT())
 		cacheControlMock = NewMockCacheControl(GinkgoT())
-		sut = NewOpenAPIInterfaceImpl(blockingControlMock, querierMock, listRefreshMock, cacheControlMock)
+		sut = NewOpenAPIInterfaceImpl(blockingControlMock, dnsControlMock, querierMock, listRefreshMock, cacheControlMock)
 	})
 
 	Describe("RegisterOpenAPIEndpoints", func() {
@@ -235,6 +237,99 @@ var _ = Describe("API implementation tests", func() {
 				var resp200 BlockingStatus200JSONResponse
 				Expect(resp).Should(BeAssignableToTypeOf(resp200))
 				resp200 = resp.(BlockingStatus200JSONResponse)
+				Expect(resp200.Enabled).Should(BeFalse())
+				Expect(resp200.DisabledGroups).Should(HaveValue(Equal([]string{"gr1", "gr2"})))
+				Expect(resp200.AutoEnableInSec).Should(HaveValue(BeNumerically("==", 47)))
+			})
+		})
+	})
+
+	Describe("Control client DNS resolver status via API", func() {
+		When("Disable client DNS resolver is called", func() {
+			It("should return a success when receiving no groups", func() {
+				var emptySlice []string
+				dnsControlMock.On("DisableClientDNSResolver", mock.Anything, 3*time.Second, emptySlice).Return(nil)
+				duration := "3s"
+				groups := ""
+
+				resp, err := sut.DisableClientDNSResolver(ctx, DisableClientDNSResolverRequestObject{
+					Params: DisableClientDNSResolverParams{
+						Duration: &duration,
+						Groups:   &groups,
+					},
+				})
+				Expect(err).Should(Succeed())
+				var resp200 DisableClientDNSResolver200Response
+				Expect(resp).Should(BeAssignableToTypeOf(resp200))
+			})
+
+			It("should return 200 on success", func() {
+				dnsControlMock.On("DisableClientDNSResolver", mock.Anything, 3*time.Second, []string{"gr1", "gr2"}).
+					Return(nil)
+				duration := "3s"
+				groups := "gr1,gr2"
+
+				resp, err := sut.DisableClientDNSResolver(ctx, DisableClientDNSResolverRequestObject{
+					Params: DisableClientDNSResolverParams{
+						Duration: &duration,
+						Groups:   &groups,
+					},
+				})
+				Expect(err).Should(Succeed())
+				var resp200 DisableClientDNSResolver200Response
+				Expect(resp).Should(BeAssignableToTypeOf(resp200))
+			})
+
+			It("should return 400 on failure", func() {
+				dnsControlMock.On("DisableClientDNSResolver", mock.Anything, mock.Anything, mock.Anything).
+					Return(errors.New("failed"))
+				resp, err := sut.DisableClientDNSResolver(ctx, DisableClientDNSResolverRequestObject{})
+				Expect(err).Should(Succeed())
+				var resp400 DisableClientDNSResolver400TextResponse
+				Expect(resp).Should(BeAssignableToTypeOf(resp400))
+				Expect(resp).Should(Equal(DisableClientDNSResolver400TextResponse("failed")))
+			})
+
+			It("should return 400 on wrong duration parameter", func() {
+				wrongDuration := "4sds"
+				resp, err := sut.DisableClientDNSResolver(ctx, DisableClientDNSResolverRequestObject{
+					Params: DisableClientDNSResolverParams{
+						Duration: &wrongDuration,
+					},
+				})
+				Expect(err).Should(Succeed())
+				var resp400 DisableClientDNSResolver400TextResponse
+				Expect(resp).Should(BeAssignableToTypeOf(resp400))
+				Expect(resp).Should(Equal(DisableClientDNSResolver400TextResponse(
+					"time: unknown unit \"sds\" in duration \"4sds\"",
+				)))
+			})
+		})
+
+		When("Enable client DNS resolver is called", func() {
+			It("should return 200 on success", func() {
+				dnsControlMock.On("EnableClientDNSResolver", mock.Anything).Return()
+
+				resp, err := sut.EnableClientDNSResolver(ctx, EnableClientDNSResolverRequestObject{})
+				Expect(err).Should(Succeed())
+				var resp200 EnableClientDNSResolver200Response
+				Expect(resp).Should(BeAssignableToTypeOf(resp200))
+			})
+		})
+
+		When("Client DNS resolver status is called", func() {
+			It("should return 200 and correct status", func() {
+				dnsControlMock.On("ClientDNSResolverStatus").Return(BlockingStatus{
+					Enabled:         false,
+					DisabledGroups:  []string{"gr1", "gr2"},
+					AutoEnableInSec: 47,
+				})
+
+				resp, err := sut.ClientDNSResolverStatus(ctx, ClientDNSResolverStatusRequestObject{})
+				Expect(err).Should(Succeed())
+				var resp200 ClientDNSResolverStatus200JSONResponse
+				Expect(resp).Should(BeAssignableToTypeOf(resp200))
+				resp200 = resp.(ClientDNSResolverStatus200JSONResponse)
 				Expect(resp200.Enabled).Should(BeFalse())
 				Expect(resp200.DisabledGroups).Should(HaveValue(Equal([]string{"gr1", "gr2"})))
 				Expect(resp200.AutoEnableInSec).Should(HaveValue(BeNumerically("==", 47)))

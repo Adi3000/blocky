@@ -188,6 +188,61 @@ func (_c *MockBlockingControl_EnableBlocking_Call) RunAndReturn(run func(ctx con
 	return _c
 }
 
+// NewMockClientDNSResolverControl creates a new instance of MockClientDNSResolverControl.
+func NewMockClientDNSResolverControl(t interface {
+	mock.TestingT
+	Cleanup(func())
+}) *MockClientDNSResolverControl {
+	mock := &MockClientDNSResolverControl{}
+	mock.Mock.Test(t)
+
+	t.Cleanup(func() { mock.AssertExpectations(t) })
+
+	return mock
+}
+
+// MockClientDNSResolverControl is a mock type for the ClientDNSResolverControl type.
+type MockClientDNSResolverControl struct {
+	mock.Mock
+}
+
+func (_mock *MockClientDNSResolverControl) ClientDNSResolverStatus() BlockingStatus {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for ClientDNSResolverStatus")
+	}
+
+	var r0 BlockingStatus
+	if returnFunc, ok := ret.Get(0).(func() BlockingStatus); ok {
+		r0 = returnFunc()
+	} else {
+		r0 = ret.Get(0).(BlockingStatus)
+	}
+
+	return r0
+}
+
+func (_mock *MockClientDNSResolverControl) DisableClientDNSResolver(
+	ctx context.Context, duration time.Duration, disableGroups []string,
+) error {
+	ret := _mock.Called(ctx, duration, disableGroups)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DisableClientDNSResolver")
+	}
+
+	if returnFunc, ok := ret.Get(0).(func(context.Context, time.Duration, []string) error); ok {
+		return returnFunc(ctx, duration, disableGroups)
+	}
+
+	return ret.Error(0)
+}
+
+func (_mock *MockClientDNSResolverControl) EnableClientDNSResolver(ctx context.Context) {
+	_mock.Called(ctx)
+}
+
 // NewMockListRefresher creates a new instance of MockListRefresher. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewMockListRefresher(t interface {

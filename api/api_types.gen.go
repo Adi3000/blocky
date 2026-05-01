@@ -48,5 +48,14 @@ type DisableBlockingParams struct {
 	Groups *string `form:"groups,omitempty" json:"groups,omitempty"`
 }
 
+// DisableClientDNSResolverParams defines parameters for DisableClientDNSResolver.
+type DisableClientDNSResolverParams struct {
+	// Duration duration of disabling (Example: 300s, 5m, 1h, 5m30s)
+	Duration *string `form:"duration,omitempty" json:"duration,omitempty"`
+
+	// Groups groups to disable (comma separated). If empty, disable all client-specific groups
+	Groups *string `form:"groups,omitempty" json:"groups,omitempty"`
+}
+
 // QueryJSONRequestBody defines body for Query for application/json ContentType.
 type QueryJSONRequestBody = ApiQueryRequest

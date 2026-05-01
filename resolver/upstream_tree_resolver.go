@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/0xERR0R/blocky/api"
 	"github.com/0xERR0R/blocky/config"
+	"github.com/0xERR0R/blocky/log"
 	"github.com/0xERR0R/blocky/model"
 	"github.com/0xERR0R/blocky/util"
 	"github.com/sirupsen/logrus"
@@ -21,6 +25,7 @@ type UpstreamTreeResolver struct {
 	typed
 
 	branches map[string]Resolver
+	status   *status
 }
 
 func NewUpstreamTreeResolver(ctx context.Context, cfg config.Upstreams, bootstrap *Bootstrap) (Resolver, error) {
@@ -46,6 +51,10 @@ func NewUpstreamTreeResolver(ctx context.Context, cfg config.Upstreams, bootstra
 		typed:        withType(upstreamTreeResolverType),
 
 		branches: branches,
+		status: &status{
+			enabled:     true,
+			enableTimer: time.NewTimer(0),
+		},
 	}
 
 	return &r, nil
@@ -104,6 +113,106 @@ func (r *UpstreamTreeResolver) String() string {
 	return fmt.Sprintf("%s upstreams %q", upstreamTreeResolverType, strings.Join(result, ", "))
 }
 
+func (r *UpstreamTreeResolver) EnableClientDNSResolver(ctx context.Context) {
+	r.internalEnableClientDNSResolver()
+	log.FromCtx(ctx).Info("client-specific DNS resolver groups enabled")
+}
+
+func (r *UpstreamTreeResolver) internalEnableClientDNSResolver() {
+	r.status.lock.Lock()
+	defer r.status.lock.Unlock()
+
+	r.status.enableTimer.Stop()
+	r.status.enabled = true
+	r.status.disabledGroups = []string{}
+}
+
+func (r *UpstreamTreeResolver) DisableClientDNSResolver(
+	ctx context.Context, duration time.Duration, disableGroups []string,
+) error {
+	s := r.status
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.enableTimer.Stop()
+
+	allGroups := r.clientSpecificGroups()
+	if len(disableGroups) == 0 {
+		s.disabledGroups = allGroups
+	} else {
+		for _, group := range disableGroups {
+			i := sort.SearchStrings(allGroups, group)
+			if i >= len(allGroups) || allGroups[i] != group {
+				return fmt.Errorf("group '%s' is unknown", group)
+			}
+		}
+
+		s.disabledGroups = disableGroups
+		sort.Strings(s.disabledGroups)
+	}
+
+	s.enabled = false
+	s.disableEnd = time.Now().Add(duration)
+
+	groups := strings.Join(s.disabledGroups, "; ")
+	if duration == 0 {
+		log.FromCtx(ctx).Infof("disable client-specific DNS resolver groups '%s'", log.EscapeInput(groups))
+	} else {
+		log.FromCtx(ctx).Infof("disable client-specific DNS resolver groups for %s: '%s'", duration,
+			log.EscapeInput(groups))
+
+		s.enableTimer = time.AfterFunc(duration, func() {
+			r.internalEnableClientDNSResolver()
+			log.Log().Info("client-specific DNS resolver groups enabled again")
+		})
+	}
+
+	return nil
+}
+
+func (r *UpstreamTreeResolver) ClientDNSResolverStatus() api.BlockingStatus {
+	var autoEnableDuration time.Duration
+
+	r.status.lock.RLock()
+	defer r.status.lock.RUnlock()
+
+	if !r.status.enabled && r.status.disableEnd.After(time.Now()) {
+		autoEnableDuration = time.Until(r.status.disableEnd)
+	}
+
+	return api.BlockingStatus{
+		Enabled:         r.status.enabled,
+		DisabledGroups:  r.status.disabledGroups,
+		AutoEnableInSec: int(autoEnableDuration.Seconds()),
+	}
+}
+
+func (r *UpstreamTreeResolver) clientSpecificGroups() []string {
+	groups := make([]string, 0, len(r.branches))
+	for group := range r.branches {
+		if group != upstreamDefaultCfgName {
+			groups = append(groups, group)
+		}
+	}
+
+	sort.Strings(groups)
+
+	return groups
+}
+
+func (r *UpstreamTreeResolver) isClientDNSResolverGroupDisabled(group string) bool {
+	r.status.lock.RLock()
+	defer r.status.lock.RUnlock()
+
+	if r.status.enabled {
+		return false
+	}
+
+	i := sort.SearchStrings(r.status.disabledGroups, group)
+
+	return i < len(r.status.disabledGroups) && r.status.disabledGroups[i] == group
+}
+
 func (r *UpstreamTreeResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
 	ctx, logger := r.log(ctx)
 
@@ -126,12 +235,22 @@ func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, reque
 
 	// try IP
 	if _, exists := r.branches[clientIP]; exists {
+		if r.isClientDNSResolverGroupDisabled(clientIP) {
+			logger.WithField("group", clientIP).Debug("client-specific DNS resolver group is disabled")
+
+			return upstreamDefaultCfgName
+		}
+
 		return clientIP
 	}
 
 	// try client names
 	for _, name := range request.ClientNames {
 		for group := range r.branches {
+			if r.isClientDNSResolverGroupDisabled(group) {
+				continue
+			}
+
 			if util.ClientNameMatchesGroupName(group, name) {
 				groups = append(groups, group)
 			}
@@ -141,6 +260,10 @@ func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, reque
 	// try CIDR (only if no client name matched)
 	if len(groups) == 0 {
 		for cidr := range r.branches {
+			if r.isClientDNSResolverGroupDisabled(cidr) {
+				continue
+			}
+
 			if util.CidrContainsIP(cidr, request.ClientIP) {
 				groups = append(groups, cidr)
 			}
