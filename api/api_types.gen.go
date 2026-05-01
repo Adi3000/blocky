@@ -22,6 +22,9 @@ type ApiQueryRequest struct {
 
 	// Type request type (A, AAAA, ...)
 	Type string `json:"type"`
+
+	// optional : refresh cache : default false
+	RefreshCache bool `json:"refreshCache"`
 }
 
 // ApiQueryResult defines model for api.QueryResult.

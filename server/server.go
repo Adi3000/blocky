@@ -430,25 +430,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-func createResolverRequest(rw dns.ResponseWriter, request *dns.Msg, refreshCache bool) *model.Request {
-	var hostName string
-
-	var remoteAddr net.Addr
-
-	if rw != nil {
-		remoteAddr = rw.RemoteAddr()
-	}
-
-	clientIP, protocol := resolveClientIPAndProtocol(remoteAddr)
-	con, ok := rw.(dns.ConnectionStater)
-
-	if ok && con.ConnectionState() != nil {
-		hostName = con.ConnectionState().ServerName
-	}
-
-	return newRequest(clientIP, protocol, extractClientIDFromHost(hostName), request, refreshCache)
-}
-
 func extractClientIDFromHost(hostName string) string {
 	const clientIDPrefix = "id-"
 	if strings.HasPrefix(hostName, clientIDPrefix) && strings.Contains(hostName, ".") {
@@ -461,7 +442,7 @@ func extractClientIDFromHost(hostName string) string {
 func newRequest(
 	ctx context.Context,
 	clientIP net.IP, clientID string,
-	protocol model.RequestProtocol, request *dns.Msg, , refreshCache bool,
+	protocol model.RequestProtocol, request *dns.Msg, refreshCache bool,
 ) (context.Context, *model.Request) {
 	ctx, logger := log.CtxWithFields(ctx, logrus.Fields{
 		"req_id":    uuid.New().String(),
@@ -481,7 +462,7 @@ func newRequest(
 		Protocol:        protocol,
 		Req:             request,
 		RequestTS:       time.Now(),
-		RefreshCache: refreshCache,
+		RefreshCache:    refreshCache,
 	}
 
 	return ctx, &req
@@ -502,7 +483,7 @@ func newRequestFromDNS(ctx context.Context, rw dns.ResponseWriter, msg *dns.Msg)
 		clientID = extractClientIDFromHost(con.ConnectionState().ServerName)
 	}
 
-	return newRequest(ctx, clientIP, clientID, protocol, msg)
+	return newRequest(ctx, clientIP, clientID, protocol, msg, false)
 }
 
 func newRequestFromHTTP(ctx context.Context, req *http.Request, msg *dns.Msg) (context.Context, *model.Request) {
@@ -514,14 +495,14 @@ func newRequestFromHTTP(ctx context.Context, req *http.Request, msg *dns.Msg) (c
 		clientID = extractClientIDFromHost(req.Host)
 	}
 
-	return newRequest(ctx, clientIP, clientID, protocol, msg)
+	return newRequest(ctx, clientIP, clientID, protocol, msg, false)
 }
 
 // OnRequest will be executed if a new DNS request is received
 func (s *Server) OnRequest(ctx context.Context, w dns.ResponseWriter, msg *dns.Msg) {
 	ctx, request := newRequestFromDNS(ctx, w, msg)
 
-	s.handleReq(ctx, request, w, false)
+	s.handleReq(ctx, request, w)
 }
 
 type msgWriter interface {

@@ -57,7 +57,7 @@ func (m *BlockingControlMock) BlockingStatus() BlockingStatus {
 }
 
 func (m *QuerierMock) Query(
-	ctx context.Context, serverHost string, clientIP net.IP, question string, qType dns.Type,
+	ctx context.Context, serverHost string, clientIP net.IP, question string, qType dns.Type, refreshCache bool,
 ) (*model.Response, error) {
 	args := m.Called(ctx, serverHost, clientIP, question, qType)
 

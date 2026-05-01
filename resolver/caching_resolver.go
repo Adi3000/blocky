@@ -287,6 +287,10 @@ func (r *CachingResolver) isRequestCacheable(request *model.Request) bool {
 			return false
 		}
 	}
+	// if forcing skipping cache for this request, just do not use cache
+	if request.SkipCache {
+		return false
+	}
 
 	return true
 }

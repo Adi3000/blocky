@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,11 +25,11 @@ type httpReqCtxKey struct{}
 // BlockingStatus represents the current blocking status
 type BlockingStatus struct {
 	// True if blocking is enabled
-	Enabled bool
+	Enabled bool `json:"enabled"`
 	// Disabled group names
-	DisabledGroups []string
-	// If blocking is temporarily disabled: amount of seconds until blocking will be enabled
-	AutoEnableInSec int
+	DisabledGroups []string `json:"disabledGroups"`
+	// If blocking is temporary disabled: amount of seconds until blocking will be enabled
+	AutoEnableInSec int `json:"autoEnableInSec"`
 }
 
 // BlockingControl interface to control the blocking status
@@ -36,6 +37,13 @@ type BlockingControl interface {
 	EnableBlocking(ctx context.Context)
 	DisableBlocking(ctx context.Context, duration time.Duration, disableGroups []string) error
 	BlockingStatus() BlockingStatus
+}
+
+// BlockingControl interface to control the blocking status
+type ClientDNSResolverControl interface {
+	EnableClientDNSResolver(ctx context.Context)
+	DisableClientDNSResolver(ctx context.Context, duration time.Duration, disableGroups []string) error
+	ClientDNSResolverStatus() BlockingStatus
 }
 
 // ListRefresher interface to control the list refresh
@@ -69,6 +77,7 @@ func ctxWithHTTPRequestMiddleware(handler StrictHandlerFunc, operationID string)
 
 type OpenAPIInterfaceImpl struct {
 	control      BlockingControl
+	dnsControl   ClientDNSResolverControl
 	querier      Querier
 	refresher    ListRefresher
 	cacheControl CacheControl
@@ -188,4 +197,90 @@ func (i *OpenAPIInterfaceImpl) CacheFlush(ctx context.Context,
 	i.cacheControl.FlushCaches(ctx)
 
 	return CacheFlush200Response{}, nil
+}
+
+// apiClientDNSResolverEnable is the http endpoint to enable the client dns resolver status
+// @Summary Enable client dns resolver
+// @Description enable the client dns resolver status
+// @Tags blocking
+// @Success 200   "Blocking is enabled"
+// @Router /blocking/enable [get]
+func (i *OpenAPIInterfaceImpl) clientDNSResolverEnable(ctx context.Context,
+	rw http.ResponseWriter, _ *http.Request,
+) {
+	log.Log().Info("enabling blocking...")
+
+	i.dnsControl.EnableClientDNSResolver(ctx)
+
+	_, err := rw.Write([]byte("{}"))
+	if err != nil {
+		log.Log().Error("Can't send an empty answer: ", log.EscapeInput(err.Error()))
+	}
+}
+
+// apiDisableClientDNSResolver is the http endpoint to disable the blocking status
+// @Summary Disable client dns resolver
+// @Description disable the client dns resolver for client
+// @Tags blocking
+// @Param duration query string false "duration of blocking (Example: 300s, 5m, 1h, 5m30s)" Format(duration)
+// @Param groups query string false "groups to disable (comma separated). If empty, disable all groups" Format(string)
+// @Success 200   "Blocking is disabled"
+// @Failure 400   "Wrong duration format"
+// @Failure 400   "Unknown group"
+// @Router /blocking/disable [get]
+func (i *OpenAPIInterfaceImpl) apiClientDNSResolverDisable(ctx context.Context,
+	rw http.ResponseWriter, req *http.Request,
+) {
+	var (
+		duration time.Duration
+		groups   []string
+		err      error
+	)
+
+	// parse duration from query parameter
+	durationParam := req.URL.Query().Get("duration")
+	if len(durationParam) > 0 {
+		duration, err = time.ParseDuration(durationParam)
+		if err != nil {
+			log.Log().Errorf("wrong duration format '%s'", log.EscapeInput(durationParam))
+			rw.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+	}
+
+	groupsParam := req.URL.Query().Get("groups")
+	if len(groupsParam) > 0 {
+		groups = strings.Split(groupsParam, ",")
+	}
+
+	err = i.dnsControl.DisableClientDNSResolver(ctx, duration, groups)
+	if err != nil {
+		log.Log().Error("can't dns disable the blocking: ", log.EscapeInput(err.Error()))
+		rw.WriteHeader(http.StatusBadRequest)
+	} else {
+		log.Log().Warn("Blocking request acknowledged but not sent to redis: ")
+		rw.WriteHeader(http.StatusOK)
+		_, err := rw.Write([]byte("{}"))
+		if err != nil {
+			log.Log().Error("Can't send an empty answer: ", log.EscapeInput(err.Error()))
+		}
+	}
+}
+
+// apiClientDNSResolverStatus is the http endpoint to get current client dns resolver status
+// @Summary client dns resolver status
+// @Description get current client dns resolver status
+// @Tags client dns resolver
+// @Produce  json
+// @Success 200 {object} api.BlockingStatus "Returns current blocking status"
+// @Router /blocking/status [get]
+func (i *OpenAPIInterfaceImpl) apiClientDNSResolverStatus(ctx context.Context, rw http.ResponseWriter, _ *http.Request) {
+	status := i.dnsControl.ClientDNSResolverStatus()
+
+	response, err := json.Marshal(status)
+	util.LogOnError(ctx, "unable to marshal response ", err)
+
+	_, err = rw.Write(response)
+	util.LogOnError(ctx, "unable to write response ", err)
 }

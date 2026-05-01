@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/0xERR0R/blocky/api"
 	"github.com/0xERR0R/blocky/config"
+	"github.com/0xERR0R/blocky/log"
 	"github.com/0xERR0R/blocky/model"
 	"github.com/0xERR0R/blocky/util"
 	"github.com/sirupsen/logrus"
@@ -19,7 +23,7 @@ const (
 type UpstreamTreeResolver struct {
 	configurable[*config.Upstreams]
 	typed
-
+	status   *status
 	branches map[string]Resolver
 }
 
@@ -118,14 +122,14 @@ func (r *UpstreamTreeResolver) Resolve(ctx context.Context, request *model.Reque
 func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, request *model.Request) string {
 	groups := make([]string, 0, len(r.branches))
 	clientIP := request.ClientIP.String()
-
+	overridedClientNames := r.filterClientsForResolver(request.ClientNames)
 	// try IP
 	if _, exists := r.branches[clientIP]; exists {
 		return clientIP
 	}
 
 	// try client names
-	for _, name := range request.ClientNames {
+	for _, name := range overridedClientNames {
 		for group := range r.branches {
 			if util.ClientNameMatchesGroupName(group, name) {
 				groups = append(groups, group)
@@ -145,7 +149,7 @@ func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, reque
 	if len(groups) > 0 {
 		if len(groups) > 1 {
 			logger.WithFields(logrus.Fields{
-				"clientNames": request.ClientNames,
+				"clientNames": overridedClientNames,
 				"clientIP":    clientIP,
 				"groups":      groups,
 			}).Warn("client matches multiple groups")
@@ -155,4 +159,98 @@ func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, reque
 	}
 
 	return upstreamDefaultCfgName
+}
+
+func (r *UpstreamTreeResolver) filterClientsForResolver(clientNames []string) (filteredClientNames []string) {
+	for _, cName := range clientNames {
+		toInclude := true
+
+		for _, filteredCname := range r.status.disabledGroups {
+			if util.ClientNameMatchesGroupName(filteredCname, cName) {
+				toInclude = false
+			}
+		}
+
+		if toInclude {
+			filteredClientNames = append(filteredClientNames, cName)
+		}
+	}
+
+	return filteredClientNames
+}
+
+func (r *UpstreamTreeResolver) EnableClientDNSResolver() {
+	r.status.lock.Lock()
+	defer r.status.lock.Unlock()
+	r.status.enableTimer.Stop()
+
+	r.status.enabled = true
+	r.status.disabledGroups = []string{}
+}
+
+// BlockingStatus returns the current blocking status
+func (r *UpstreamTreeResolver) ClientDNSResolverStatus() api.BlockingStatus {
+	var autoEnableDuration time.Duration
+
+	r.status.lock.RLock()
+	defer r.status.lock.RUnlock()
+
+	if !r.status.enabled && r.status.disableEnd.After(time.Now()) {
+		autoEnableDuration = time.Until(r.status.disableEnd)
+	}
+
+	return api.BlockingStatus{
+		Enabled:         r.status.enabled,
+		DisabledGroups:  r.status.disabledGroups,
+		AutoEnableInSec: int(autoEnableDuration.Seconds()),
+	}
+}
+
+func (r *UpstreamTreeResolver) DisableClientDNSResolver(duration time.Duration, disableGroups []string) error {
+	dnsStatus := r.status
+	dnsStatus.lock.Lock()
+	defer dnsStatus.lock.Unlock()
+	dnsStatus.enableTimer.Stop()
+
+	var allBlockingGroups []string
+	allResolvers := *r.resolvers.Load()
+
+	for _, k := range allResolvers {
+		if k.resolver.String() != upstreamDefaultCfgName {
+			allBlockingGroups = append(allBlockingGroups, k.resolver.String())
+		}
+	}
+
+	sort.Strings(allBlockingGroups)
+
+	if len(disableGroups) == 0 {
+		dnsStatus.disabledGroups = allBlockingGroups
+	} else {
+		for _, g := range disableGroups {
+			i := sort.SearchStrings(allBlockingGroups, g)
+			if !(i < len(allBlockingGroups) && allBlockingGroups[i] == g) {
+				return fmt.Errorf("group '%s' is unknown", g)
+			}
+		}
+		dnsStatus.disabledGroups = disableGroups
+	}
+
+	dnsStatus.enabled = false
+
+	dnsStatus.disableEnd = time.Now().Add(duration)
+
+	if duration == 0 {
+		log.Log().Infof(
+			"disable blocking with specific dns for group(s) '%s'",
+			log.EscapeInput(strings.Join(dnsStatus.disabledGroups, "; ")))
+	} else {
+		log.Log().Infof("disable blocking with specific dns for %s for group(s) '%s'", duration,
+			log.EscapeInput(strings.Join(dnsStatus.disabledGroups, "; ")))
+		dnsStatus.enableTimer = time.AfterFunc(duration, func() {
+			r.EnableClientDNSResolver()
+			log.Log().Info("blocking with specific dns enabled again")
+		})
+	}
+
+	return nil
 }

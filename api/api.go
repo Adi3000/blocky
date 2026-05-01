@@ -66,13 +66,3 @@ type QueryResult struct {
 	// DNS return code (NOERROR, NXDOMAIN, ...)
 	ReturnCode string `json:"returnCode"`
 }
-
-// BlockingStatus represents the current blocking status
-type BlockingStatus struct {
-	// True if blocking is enabled
-	Enabled bool `json:"enabled"`
-	// Disabled group names
-	DisabledGroups []string `json:"disabledGroups"`
-	// If blocking is temporary disabled: amount of seconds until blocking will be enabled
-	AutoEnableInSec uint `json:"autoEnableInSec"`
-}

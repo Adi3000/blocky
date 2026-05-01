@@ -146,12 +146,7 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, httpRe
 		return
 	}
 
-	clientID := chi.URLParam(req, "clientID")
-	if clientID == "" {
-		clientID = extractClientIDFromHost(req.Host)
-	}
-
-	ctx, dnsReq := newRequestFromHTTP(httpReq.Context(), httpReq, msg, false)
+	ctx, dnsReq := newRequestFromHTTP(httpReq.Context(), httpReq, msg)
 
 	s.handleReq(ctx, dnsReq, httpMsgWriter{rw})
 }
@@ -192,101 +187,15 @@ func getSmallestTTLFromAnswer(msg *dns.Msg) uint32 {
 }
 
 func (s *Server) Query(
-	ctx context.Context, serverHost string, clientIP net.IP, question string, qType dns.Type,
+	ctx context.Context, serverHost string, clientIP net.IP, question string, qType dns.Type, refreshCache bool,
 ) (*model.Response, error) {
 	msg := util.NewMsgWithQuestion(question, qType)
 	clientID := extractClientIDFromHost(serverHost)
 
-	ctx, req := newRequest(ctx, clientIP, clientID, model.RequestProtocolTCP, msg)
+	ctx, req := newRequest(ctx, clientIP, clientID, model.RequestProtocolTCP, msg, refreshCache)
 
 	return s.resolve(ctx, req)
 }
-
-// apiQuery is the http endpoint to perform a DNS query
-// @Summary Performs DNS query
-// @Description Performs DNS query
-// @Tags query
-// @Accept  json
-// @Produce  json
-// @Param query body api.QueryRequest true "query data"
-// @Success 200 {object} api.QueryResult "query was executed"
-// @Failure 400   "Wrong request format"
-// @Router /query [post]
-func (s *Server) apiQuery(rw http.ResponseWriter, req *http.Request) {
-	var queryRequest api.QueryRequest
-
-	rw.Header().Set(contentTypeHeader, jsonContentType)
-
-	err := json.NewDecoder(req.Body).Decode(&queryRequest)
-	if err != nil {
-		logAndResponseWithError(err, "can't read request: ", rw)
-
-		return
-	}
-
-	// validate query type
-	qType := dns.Type(dns.StringToType[queryRequest.Type])
-	if qType == dns.Type(dns.TypeNone) {
-		err = fmt.Errorf("unknown query type '%s'", queryRequest.Type)
-		logAndResponseWithError(err, "unknown query type: ", rw)
-
-		return
-	}
-
-	query := formatQuery(queryRequest)
-	apirw, err := getAPIResponse(queryRequest, req)
-
-	if err != nil {
-		logAndResponseWithError(err, "Cannot find remote url on "+req.RemoteAddr+" : ", rw)
-
-		return
-	}
-
-	dnsRequest := util.NewMsgWithQuestion(query, qType)
-	r := createResolverRequest(&apirw, dnsRequest, queryRequest.RefreshCache)
-
-	response, err := s.queryResolver.Resolve(r)
-
-	if err != nil {
-		logAndResponseWithError(err, "unable to process query: ", rw)
-
-		return
-	}
-
-	jsonResponse, err := json.Marshal(api.QueryResult{
-		Reason:       response.Reason,
-		ResponseType: response.RType.String(),
-		Response:     util.AnswerToString(response.Res.Answer),
-		ReturnCode:   dns.RcodeToString[response.Res.Rcode],
-	})
-	if err != nil {
-		logAndResponseWithError(err, "unable to marshal response: ", rw)
-
-		return
-	}
-
-	_, err = rw.Write(jsonResponse)
-	logAndResponseWithError(err, "unable to write response: ", rw)
-}
-
-func createHTTPRouter(cfg *config.Config, openAPIImpl api.StrictServerInterface) *chi.Mux {
-	router := chi.NewRouter()
-
-	api.RegisterOpenAPIEndpoints(router, openAPIImpl)
-
-	configureDebugHandler(router)
-
-	configureDocsHandler(router)
-
-	configureStaticAssetsHandler(router)
-
-	configureRootHandler(cfg, router)
-
-	metrics.Start(router, cfg.Prometheus)
-
-	return router
-}
-
 
 func createHTTPRouter(cfg *config.Config, openAPIImpl api.StrictServerInterface) *chi.Mux {
 	router := chi.NewRouter()
