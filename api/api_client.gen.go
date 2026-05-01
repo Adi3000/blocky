@@ -101,6 +101,15 @@ type ClientInterface interface {
 	// CacheFlush request
 	CacheFlush(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// DisableClientDNSResolver request
+	DisableClientDNSResolver(ctx context.Context, params *DisableClientDNSResolverParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// EnableClientDNSResolver request
+	EnableClientDNSResolver(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ClientDNSResolverStatus request
+	ClientDNSResolverStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListRefresh request
 	ListRefresh(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -151,6 +160,42 @@ func (c *Client) BlockingStatus(ctx context.Context, reqEditors ...RequestEditor
 
 func (c *Client) CacheFlush(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCacheFlushRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DisableClientDNSResolver(ctx context.Context, params *DisableClientDNSResolverParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDisableClientDNSResolverRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) EnableClientDNSResolver(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEnableClientDNSResolverRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ClientDNSResolverStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClientDNSResolverStatusRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +401,126 @@ func NewCacheFlushRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewDisableClientDNSResolverRequest generates requests for DisableClientDNSResolver
+func NewDisableClientDNSResolverRequest(server string, params *DisableClientDNSResolverParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/dns/disable")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Duration != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "duration", *params.Duration, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Groups != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "groups", *params.Groups, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewEnableClientDNSResolverRequest generates requests for EnableClientDNSResolver
+func NewEnableClientDNSResolverRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/dns/enable")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewClientDNSResolverStatusRequest generates requests for ClientDNSResolverStatus
+func NewClientDNSResolverStatusRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/dns/status")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListRefreshRequest generates requests for ListRefresh
 func NewListRefreshRequest(server string) (*http.Request, error) {
 	var err error
@@ -505,6 +670,15 @@ type ClientWithResponsesInterface interface {
 	// CacheFlushWithResponse request
 	CacheFlushWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*CacheFlushResponse, error)
 
+	// DisableClientDNSResolverWithResponse request
+	DisableClientDNSResolverWithResponse(ctx context.Context, params *DisableClientDNSResolverParams, reqEditors ...RequestEditorFn) (*DisableClientDNSResolverResponse, error)
+
+	// EnableClientDNSResolverWithResponse request
+	EnableClientDNSResolverWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*EnableClientDNSResolverResponse, error)
+
+	// ClientDNSResolverStatusWithResponse request
+	ClientDNSResolverStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ClientDNSResolverStatusResponse, error)
+
 	// ListRefreshWithResponse request
 	ListRefreshWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRefreshResponse, error)
 
@@ -628,6 +802,94 @@ func (r CacheFlushResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r CacheFlushResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DisableClientDNSResolverResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r DisableClientDNSResolverResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DisableClientDNSResolverResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DisableClientDNSResolverResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type EnableClientDNSResolverResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r EnableClientDNSResolverResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r EnableClientDNSResolverResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r EnableClientDNSResolverResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ClientDNSResolverStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ApiBlockingStatus
+}
+
+// Status returns HTTPResponse.Status
+func (r ClientDNSResolverStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ClientDNSResolverStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ClientDNSResolverStatusResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -759,6 +1021,33 @@ func (c *ClientWithResponses) CacheFlushWithResponse(ctx context.Context, reqEdi
 	return ParseCacheFlushResponse(rsp)
 }
 
+// DisableClientDNSResolverWithResponse request returning *DisableClientDNSResolverResponse
+func (c *ClientWithResponses) DisableClientDNSResolverWithResponse(ctx context.Context, params *DisableClientDNSResolverParams, reqEditors ...RequestEditorFn) (*DisableClientDNSResolverResponse, error) {
+	rsp, err := c.DisableClientDNSResolver(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDisableClientDNSResolverResponse(rsp)
+}
+
+// EnableClientDNSResolverWithResponse request returning *EnableClientDNSResolverResponse
+func (c *ClientWithResponses) EnableClientDNSResolverWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*EnableClientDNSResolverResponse, error) {
+	rsp, err := c.EnableClientDNSResolver(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEnableClientDNSResolverResponse(rsp)
+}
+
+// ClientDNSResolverStatusWithResponse request returning *ClientDNSResolverStatusResponse
+func (c *ClientWithResponses) ClientDNSResolverStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ClientDNSResolverStatusResponse, error) {
+	rsp, err := c.ClientDNSResolverStatus(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseClientDNSResolverStatusResponse(rsp)
+}
+
 // ListRefreshWithResponse request returning *ListRefreshResponse
 func (c *ClientWithResponses) ListRefreshWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRefreshResponse, error) {
 	rsp, err := c.ListRefresh(ctx, reqEditors...)
@@ -863,6 +1152,64 @@ func ParseCacheFlushResponse(rsp *http.Response) (*CacheFlushResponse, error) {
 	response := &CacheFlushResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseDisableClientDNSResolverResponse parses an HTTP response from a DisableClientDNSResolverWithResponse call
+func ParseDisableClientDNSResolverResponse(rsp *http.Response) (*DisableClientDNSResolverResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DisableClientDNSResolverResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseEnableClientDNSResolverResponse parses an HTTP response from a EnableClientDNSResolverWithResponse call
+func ParseEnableClientDNSResolverResponse(rsp *http.Response) (*EnableClientDNSResolverResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &EnableClientDNSResolverResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseClientDNSResolverStatusResponse parses an HTTP response from a ClientDNSResolverStatusWithResponse call
+func ParseClientDNSResolverStatusResponse(rsp *http.Response) (*ClientDNSResolverStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ClientDNSResolverStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ApiBlockingStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
 	}
 
 	return response, nil

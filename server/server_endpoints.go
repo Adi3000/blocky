@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/0xERR0R/blocky/metrics"
 	"github.com/0xERR0R/blocky/resolver"
@@ -41,6 +42,11 @@ func (s *Server) createOpenAPIInterfaceImpl() (impl api.StrictServerInterface, e
 		return nil, fmt.Errorf("no blocking API implementation found %w", err)
 	}
 
+	dnsControl, err := resolver.GetFromChainWithType[api.ClientDNSResolverControl](s.queryResolver)
+	if err != nil {
+		dnsControl = noopClientDNSResolverControl{}
+	}
+
 	refresher, err := resolver.GetFromChainWithType[api.ListRefresher](s.queryResolver)
 	if err != nil {
 		return nil, fmt.Errorf("no refresh API implementation found %w", err)
@@ -61,7 +67,19 @@ func (s *Server) createOpenAPIInterfaceImpl() (impl api.StrictServerInterface, e
 		statsProvider = nil
 	}
 
-	return api.NewOpenAPIInterfaceImpl(bControl, s, refresher, cacheControl, statsProvider), nil
+	return api.NewOpenAPIInterfaceImpl(bControl, dnsControl, s, refresher, cacheControl, statsProvider), nil
+}
+
+type noopClientDNSResolverControl struct{}
+
+func (noopClientDNSResolverControl) EnableClientDNSResolver(context.Context) {}
+
+func (noopClientDNSResolverControl) DisableClientDNSResolver(context.Context, time.Duration, []string) error {
+	return nil
+}
+
+func (noopClientDNSResolverControl) ClientDNSResolverStatus() api.BlockingStatus {
+	return api.BlockingStatus{Enabled: true}
 }
 
 func (s *Server) registerDoHEndpoints(router *chi.Mux, cfg *config.Config) {
