@@ -12,6 +12,7 @@ import (
 
 	. "github.com/0xERR0R/blocky/helpertest"
 	"github.com/0xERR0R/blocky/log"
+	"github.com/0xERR0R/blocky/metrics"
 	"github.com/0xERR0R/blocky/querylog"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/mock"
@@ -37,6 +38,43 @@ func (m *SlowMockWriter) Write(entry *querylog.LogEntry) {
 }
 
 func (m *SlowMockWriter) CleanUp() {
+}
+
+type ShutdownRecordingWriter struct {
+	entries  []*querylog.LogEntry
+	shutdown bool
+}
+
+func (m *ShutdownRecordingWriter) Write(entry *querylog.LogEntry) {
+	m.entries = append(m.entries, entry)
+}
+
+func (m *ShutdownRecordingWriter) CleanUp() {
+}
+
+func (m *ShutdownRecordingWriter) Shutdown(context.Context) error {
+	m.shutdown = true
+
+	return nil
+}
+
+func droppedEntries(reason querylog.DropReason) float64 {
+	families, err := metrics.Reg.Gather()
+	Expect(err).Should(Succeed())
+
+	for _, family := range families {
+		if family.GetName() != "blocky_query_log_entries_dropped_total" {
+			continue
+		}
+
+		for _, m := range family.GetMetric() {
+			if m.GetLabel()[0].GetValue() == string(reason) {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+
+	return 0
 }
 
 var _ = Describe("QueryLoggingResolver", func() {
@@ -217,6 +255,36 @@ var _ = Describe("QueryLoggingResolver", func() {
 				})
 
 				It("should log a non-matching domain", func() {
+					_, err := sut.Resolve(ctx,
+						newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
+					Expect(err).Should(Succeed())
+
+					Expect(sut.logChan).ShouldNot(BeEmpty())
+					Expect(ignored.Calls).Should(BeEmpty())
+				})
+			})
+
+			Describe("Clients", func() {
+				BeforeEach(func() {
+					sutConfig.Ignore.Clients = []string{"192.168.178.1", "10.0.0.0/24", "printer", "*-ap"}
+				})
+
+				DescribeTable("should not log queries from a matching client",
+					func(ip string, names ...string) {
+						_, err := sut.Resolve(ctx, newRequestWithClient("example.com.", A, ip, names...))
+						Expect(err).Should(Succeed())
+
+						Expect(sut.logChan).Should(BeEmpty())
+						Expect(ignored.Messages).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+					},
+					Entry("by IP", "192.168.178.1", "router"),
+					Entry("by CIDR", "10.0.0.7", "laptop"),
+					Entry("by client name, case-insensitive", "192.168.178.30", "Printer"),
+					Entry("by client name wildcard", "192.168.178.31", "kitchen-ap"),
+					Entry("by any of the client names", "192.168.178.32", "laptop", "printer"),
+				)
+
+				It("should log queries from other clients", func() {
 					_, err := sut.Resolve(ctx,
 						newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
 					Expect(err).Should(Succeed())
@@ -413,17 +481,72 @@ var _ = Describe("QueryLoggingResolver", func() {
 					CreationCooldown: config.Duration(time.Millisecond),
 				}
 			})
-			It("should drop messages", func() {
+			It("should drop messages and count them", func() {
 				mockWriter := &SlowMockWriter{}
 				sut.writer = mockWriter
 
-				Eventually(func() int {
+				before := droppedEntries(querylog.DropReasonQueueFull)
+
+				Eventually(func() float64 {
 					_, ierr := sut.Resolve(ctx, newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
 					Expect(ierr).Should(Succeed())
 
-					return len(sut.logChan)
-				}, "3s", "1µs").Should(Equal(cap(sut.logChan)))
+					return droppedEntries(querylog.DropReasonQueueFull) - before
+				}, "3s", "1µs").Should(BeNumerically(">", 0))
 			})
+		})
+	})
+
+	Describe("Shutdown", func() {
+		BeforeEach(func() {
+			sutConfig = config.QueryLog{
+				Type:             config.QueryLogTypeConsole,
+				CreationAttempts: 1,
+				CreationCooldown: config.Duration(time.Millisecond),
+			}
+		})
+		// queue fills the queue once the background context has ended, as in blocky's
+		// shutdown, where DNS still answers then.
+		queue := func(n int) {
+			cancelFn()
+			Eventually(sut.writeLogDone).Should(BeClosed())
+
+			for range n {
+				_, ierr := sut.Resolve(context.Background(), newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
+				Expect(ierr).Should(Succeed())
+			}
+		}
+
+		It("writes the queued entries, then shuts the writer down", func() {
+			writer := &ShutdownRecordingWriter{}
+			sut.writer = writer
+
+			queue(50)
+
+			Expect(sut.Shutdown(context.Background())).Should(Succeed())
+			Expect(writer.entries).Should(HaveLen(50))
+			Expect(writer.shutdown).Should(BeTrue())
+		})
+
+		It("stops at the deadline and counts what is left in the queue", func() {
+			writer := &ShutdownRecordingWriter{}
+			sut.writer = writer
+
+			queue(20)
+
+			before := droppedEntries(querylog.DropReasonShutdown)
+
+			Expect(sut.Shutdown(ctx)).Should(MatchError(context.Canceled)) // ctx is done already
+			Expect(writer.entries).Should(BeEmpty())
+			Expect(writer.shutdown).Should(BeTrue())
+			Expect(droppedEntries(querylog.DropReasonShutdown) - before).Should(BeNumerically("==", 20))
+		})
+
+		It("leaves a writer that holds nothing in memory alone", func() {
+			queue(3) // the console writer
+
+			Expect(sut.Shutdown(context.Background())).Should(Succeed())
+			Expect(sut.logChan).Should(HaveLen(3))
 		})
 	})
 
@@ -526,6 +649,9 @@ var _ = Describe("QueryLoggingResolver", func() {
 			Expect(err).Should(Succeed())
 			Expect(writer).ShouldNot(BeNil())
 			Expect(writer).Should(BeAssignableToTypeOf(&querylog.DatabaseWriter{}))
+
+			// it connects in the background: stop it before the directory is removed
+			DeferCleanup(func() { _ = writer.(*querylog.DatabaseWriter).Shutdown(ctx) })
 		})
 
 		It("creates a dnstap writer", func() {
@@ -610,6 +736,45 @@ var _ = Describe("QueryLoggingResolver", func() {
 			Expect(matcher.Contains("unrelated.example.net", groups)).Should(BeEmpty())
 			Expect(matcher.Contains("example.com", groups)).ShouldNot(BeEmpty())
 			Expect(hook.Messages).Should(ContainElement(ContainSubstring("invalid")))
+		})
+	})
+
+	Describe("newIgnoredClients", func() {
+		It("returns nil for an empty list", func() {
+			logger, _ := log.NewMockEntry()
+			Expect(newIgnoredClients(nil, logger)).Should(BeNil())
+		})
+
+		It("matches IPs, CIDRs, client names and wildcards", func() {
+			logger, _ := log.NewMockEntry()
+			m := newIgnoredClients([]string{"192.0.2.10", "2001:DB8::1", "192.0.2.64/28", " NAS ", "*-ap"}, logger)
+
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.10"))).Should(BeTrue())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "::ffff:192.0.2.10"))).Should(BeTrue())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "2001:db8::1"))).Should(BeTrue())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.70"))).Should(BeTrue())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.80", "nas"))).Should(BeTrue())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.80", "Office-AP"))).Should(BeTrue())
+
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.80", "laptop"))).Should(BeFalse())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.11"))).Should(BeFalse())
+		})
+
+		It("matches a CIDR entry only against the client IP", func() {
+			logger, _ := log.NewMockEntry()
+			m := newIgnoredClients([]string{"192.0.2.0/24"}, logger)
+
+			Expect(m.matches(newRequestWithClient("example.com.", A, "198.51.100.1", "192.0.2.0/24"))).Should(BeFalse())
+		})
+
+		It("warns and skips invalid entries but keeps valid ones", func() {
+			logger, hook := log.NewMockEntry()
+			m := newIgnoredClients([]string{"[", "  ", "printer"}, logger)
+
+			Expect(m.globs).Should(BeEmpty())
+			Expect(m.matches(newRequestWithClient("example.com.", A, "192.0.2.1", "printer"))).Should(BeTrue())
+			Expect(hook.Messages).Should(HaveEach(ContainSubstring("invalid")))
+			Expect(hook.Messages).Should(HaveLen(2))
 		})
 	})
 })

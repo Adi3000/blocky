@@ -169,7 +169,7 @@
         },
         "zone": {
           "type": "string",
-          "description": "DNS zone file content for more complex record definitions (A, AAAA, CNAME, TXT, SRV).",
+          "description": "DNS zone file content for more complex record definitions (A, AAAA, CNAME, TXT, SRV, HTTPS, SVCB).",
           "default": ""
         },
         "filterUnmappedTypes": {
@@ -773,6 +773,13 @@
               },
               "type": "array",
               "description": "Domains whose queries are not logged. Each entry is matched against the\nquery name as an exact domain, a *.wildcard, or a /regex/."
+            },
+            "clients": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "description": "Clients whose queries are not logged. Each entry is a client IP, a CIDR, or\na client name, which can use * and ? wildcards as in clientGroupsBlock."
             }
           },
           "additionalProperties": false,
@@ -795,6 +802,11 @@
           "type": "string",
           "description": "URL path under which the Prometheus metrics are served.",
           "default": "/metrics"
+        },
+        "enableClientLabel": {
+          "type": "boolean",
+          "description": "If true, the client name (or IP) is used as the \"client\" label on\nblocky_query_total and blocky_client_response_total. Disable to collapse the\nlabel to a single \"unknown\" value and avoid unbounded metric cardinality when\nblocky serves many distinct or client-controlled names (e.g. an internet-facing DoH).",
+          "default": true
         }
       },
       "additionalProperties": false,
@@ -1617,12 +1629,12 @@
         },
         "maxChainDepth": {
           "type": "integer",
-          "description": "Maximum domain label depth for chain of trust validation (DoS protection).",
+          "description": "Maximum number of zones in a chain of trust below its trust anchor (DoS protection).",
           "default": 10
         },
         "cacheExpirationHours": {
           "type": "integer",
-          "description": "How long to cache DNSSEC validation results, in hours.",
+          "description": "How long to cache DNSSEC validation results at most, in hours.",
           "default": 1
         },
         "maxNSEC3Iterations": {
@@ -1632,7 +1644,7 @@
         },
         "maxUpstreamQueries": {
           "type": "integer",
-          "description": "DoS protection: max upstream queries per validation",
+          "description": "DoS protection: max upstream queries that the validation for one client query makes",
           "default": 30
         },
         "clockSkewToleranceSec": {

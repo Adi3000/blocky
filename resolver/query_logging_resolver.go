@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -16,7 +18,7 @@ import (
 	"github.com/0xERR0R/blocky/model"
 	"github.com/0xERR0R/blocky/querylog"
 	"github.com/0xERR0R/blocky/util"
-	"github.com/avast/retry-go/v4"
+	"github.com/avast/retry-go/v5"
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -43,6 +45,100 @@ type QueryLoggingResolver struct {
 	writer        querylog.Writer
 	instanceID    string
 	ignoreDomains stringcache.GroupedStringCache
+	ignoreClients *ignoredClients
+
+	stopWriteLog context.CancelFunc
+	writeLogDone chan struct{}
+}
+
+// ignoredClients matches the queryLog.ignore.clients entries against the client
+// of a request, the same way blocking.clientGroupsBlock identifies clients.
+type ignoredClients struct {
+	// exact holds the lowercased literal entries: IPs (normalized) and client
+	// names. It is checked against the client IP and every client name.
+	exact map[string]struct{}
+	// cidrs holds the entries that parse as a CIDR.
+	cidrs []*net.IPNet
+	// globs holds the lowercased client name patterns, matched with filepath.Match.
+	globs []string
+}
+
+// newIgnoredClients builds a matcher for the queryLog.ignore.clients rules.
+// Returns nil when no clients are configured, so the per-query path stays free.
+func newIgnoredClients(clients []string, logger *logrus.Entry) *ignoredClients {
+	if len(clients) == 0 {
+		return nil
+	}
+
+	m := &ignoredClients{exact: make(map[string]struct{}, len(clients))}
+
+	for _, c := range clients {
+		id := strings.ToLower(strings.TrimSpace(c))
+
+		if id == "" {
+			logger.Warnf("ignoring invalid queryLog.ignore.clients entry: %q", c)
+
+			continue
+		}
+
+		if isClientNameGlob(id) {
+			if _, err := filepath.Match(id, ""); err != nil {
+				logger.Warnf("ignoring invalid queryLog.ignore.clients entry: %q", c)
+
+				continue
+			}
+
+			m.globs = append(m.globs, id)
+
+			continue
+		}
+
+		if _, ipNet, err := net.ParseCIDR(id); err == nil {
+			m.cidrs = append(m.cidrs, ipNet)
+
+			continue
+		}
+
+		// Normalize IPs, so that an IPv4-mapped IPv6 address matches the IPv4 entry
+		if ip := net.ParseIP(id); ip != nil {
+			id = ip.String()
+		}
+
+		m.exact[id] = struct{}{}
+	}
+
+	return m
+}
+
+// matches reports whether the request comes from an ignored client.
+func (m *ignoredClients) matches(request *model.Request) bool {
+	if request.ClientIP != nil {
+		if _, ok := m.exact[request.ClientIP.String()]; ok {
+			return true
+		}
+
+		for _, ipNet := range m.cidrs {
+			if ipNet.Contains(request.ClientIP) {
+				return true
+			}
+		}
+	}
+
+	for _, name := range request.ClientNames {
+		name = strings.ToLower(name)
+
+		if _, ok := m.exact[name]; ok {
+			return true
+		}
+
+		for _, pattern := range m.globs {
+			if matched, _ := filepath.Match(pattern, name); matched {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func GetQueryLoggingWriter(ctx context.Context, cfg config.QueryLog, instanceID string) (querylog.Writer, error) {
@@ -120,25 +216,13 @@ func newIgnoreDomainsMatcher(domains []string, logger *logrus.Entry) stringcache
 	return matcher
 }
 
-// NewQueryLoggingResolver returns a new resolver instance
-func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLoggingResolver, error) {
-	logger := log.PrefixedLog(queryLoggingResolverType)
-
+// createWriterWithRetry creates the query log writer, retrying on failure.
+func createWriterWithRetry(ctx context.Context, cfg config.QueryLog, instanceID string,
+	logger *logrus.Entry,
+) (querylog.Writer, error) {
 	var writer querylog.Writer
 
-	instanceID, err := readInstanceID("/etc/hostname")
-	if err != nil {
-		return nil, fmt.Errorf("failed to determine instance ID for query logging: %w", err)
-	}
-
-	err = retry.Do(
-		func() error {
-			var err error
-
-			writer, err = GetQueryLoggingWriter(ctx, cfg, instanceID)
-
-			return err
-		},
+	err := retry.New(
 		retry.Attempts(uint(cfg.CreationAttempts)),
 		retry.DelayType(retry.FixedDelay),
 		retry.Delay(cfg.CreationCooldown.ToDuration()),
@@ -146,7 +230,28 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 			logger.Warnf(
 				"Error occurred on query writer creation, retry attempt %d/%d: %v", n+1, cfg.CreationAttempts, err,
 			)
-		}))
+		})).Do(
+		func() error {
+			var err error
+
+			writer, err = GetQueryLoggingWriter(ctx, cfg, instanceID)
+
+			return err
+		})
+
+	return writer, err
+}
+
+// NewQueryLoggingResolver returns a new resolver instance
+func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLoggingResolver, error) {
+	logger := log.PrefixedLog(queryLoggingResolverType)
+
+	instanceID, err := readInstanceID("/etc/hostname")
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine instance ID for query logging: %w", err)
+	}
+
+	writer, err := createWriterWithRetry(ctx, cfg, instanceID, logger)
 	if err != nil {
 		logger.Error("can't create query log writer, using console as fallback: ", err)
 
@@ -158,6 +263,8 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 
 	ignoreDomains := newIgnoreDomainsMatcher(cfg.Ignore.Domains, logger)
 
+	writeLogCtx, stopWriteLog := context.WithCancel(ctx)
+
 	resolver := QueryLoggingResolver{
 		configurable: withConfig(&cfg),
 		typed:        withType(queryLoggingResolverType),
@@ -166,9 +273,13 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 		writer:        writer,
 		instanceID:    instanceID,
 		ignoreDomains: ignoreDomains,
+		ignoreClients: newIgnoredClients(cfg.Ignore.Clients, logger),
+
+		stopWriteLog: stopWriteLog,
+		writeLogDone: make(chan struct{}),
 	}
 
-	go resolver.writeLog(ctx)
+	go resolver.writeLog(writeLogCtx)
 
 	// Timescale uses database features for retention
 	if cfg.LogRetentionDays > 0 &&
@@ -237,6 +348,7 @@ func (r *QueryLoggingResolver) Resolve(ctx context.Context, request *model.Reque
 	select {
 	case r.logChan <- entry:
 	default:
+		querylog.CountDropped(querylog.DropReasonQueueFull, 1)
 		logger.Error("query log writer is too slow, log entry will be dropped")
 	}
 
@@ -247,6 +359,10 @@ func (r *QueryLoggingResolver) ignore(request *model.Request, response *model.Re
 	cfg := r.cfg.Ignore
 
 	if cfg.SUDN && response.RType == model.ResponseTypeSPECIAL {
+		return true
+	}
+
+	if r.ignoreClients != nil && r.ignoreClients.matches(request) {
 		return true
 	}
 
@@ -323,6 +439,8 @@ func (r *QueryLoggingResolver) createLogEntry(request *model.Request, response *
 
 // write entry: if log directory is configured, write to log file
 func (r *QueryLoggingResolver) writeLog(ctx context.Context) {
+	defer close(r.writeLogDone)
+
 	ctx, logger := r.log(ctx)
 
 	for {
@@ -357,6 +475,36 @@ func (r *QueryLoggingResolver) closeWriter() {
 			log.PrefixedLog(queryLoggingResolverType).WithError(err).Warn("failed to close query log writer")
 		}
 	}
+}
+
+// Shutdown hands the writer the entries still queued and shuts it down, giving up when
+// ctx is done. Only a writer with a Shutdown of its own takes part: its Write just
+// buffers, so the loop keeps to the deadline. With the other writers, what is still
+// queued is lost, as before. Call it once the DNS listeners have stopped. DoH is served
+// over HTTP, which isn't waited for: an entry a late DoH request adds is lost.
+func (r *QueryLoggingResolver) Shutdown(ctx context.Context) error {
+	w, ok := r.writer.(Shutdowner)
+	if !ok {
+		return nil
+	}
+
+	r.stopWriteLog()
+	<-r.writeLogDone
+
+	for len(r.logChan) > 0 {
+		select {
+		case <-ctx.Done():
+			n := len(r.logChan)
+			querylog.CountDropped(querylog.DropReasonShutdown, n)
+
+			return errors.Join(fmt.Errorf("dropped %d queued query log entries: %w", n, ctx.Err()), w.Shutdown(ctx))
+		default:
+		}
+
+		r.writer.Write(<-r.logChan)
+	}
+
+	return w.Shutdown(ctx)
 }
 
 func readInstanceID(file string) (string, error) {

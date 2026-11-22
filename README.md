@@ -6,8 +6,6 @@
 [![Docker pulls](https://img.shields.io/docker/pulls/spx01/blocky "Latest version")](https://hub.docker.com/r/spx01/blocky)
 [![Docker Image Size (latest)](https://img.shields.io/docker/image-size/spx01/blocky/latest)](https://hub.docker.com/r/spx01/blocky)
 [![Codecov](https://img.shields.io/codecov/c/gh/0xERR0R/blocky "Code coverage")](https://codecov.io/gh/0xERR0R/blocky)
-[![Codacy grade](https://img.shields.io/codacy/grade/8fcd8f8420b8419c808c47af58ed9282 "Codacy grade")](#)
-[![Go Report Card](https://goreportcard.com/badge/github.com/0xERR0R/blocky)](https://goreportcard.com/report/github.com/0xERR0R/blocky)
 [![Donation](https://img.shields.io/badge/buy%20me%20a%20coffee-donate-blueviolet.svg)](https://ko-fi.com/0xerr0r)
 [![Liberapay receiving](https://img.shields.io/liberapay/receives/spx01.svg?logo=liberapay "Support via Liberapay")](https://liberapay.com/spx01)
 
@@ -107,7 +105,7 @@ Even a small recurring contribution makes a real difference and is hugely apprec
 
 ### Sponsors
 
-<!-- sponsors --><a href="https://github.com/Qapf"><img src="https://github.com/Qapf.png" width="60px" alt="Sponsor: Qapf" /></a><a href="https://github.com/V-Mann-Nick"><img src="https://github.com/V-Mann-Nick.png" width="60px" alt="Sponsor: V-Mann-Nick" /></a><a href="https://github.com/bioxz"><img src="https://github.com/bioxz.png" width="60px" alt="Sponsor: bioxz" /></a><a href="https://github.com/Cebeerre"><img src="https://github.com/Cebeerre.png" width="60px" alt="Sponsor: Cebeerre" /></a><!-- sponsors -->
+<!-- sponsors --><a href="https://github.com/Qapf"><img src="https://github.com/Qapf.png" width="60px" alt="Sponsor: Qapf" /></a><a href="https://github.com/V-Mann-Nick"><img src="https://github.com/V-Mann-Nick.png" width="60px" alt="Sponsor: V-Mann-Nick" /></a><a href="https://github.com/bioxz"><img src="https://github.com/bioxz.png" width="60px" alt="Sponsor: bioxz" /></a><a href="https://github.com/Cebeerre"><img src="https://github.com/Cebeerre.png" width="60px" alt="Sponsor: Cebeerre" /></a><a href="https://github.com/drewdavies"><img src="https://github.com/drewdavies.png" width="60px" alt="Sponsor: drewdavies" /></a><!-- sponsors -->
 
 Thank you to everyone who supports Blocky! ❤️
 

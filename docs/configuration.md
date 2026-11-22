@@ -569,7 +569,7 @@ Please be aware that by enabling this your resolution will break unless every qu
 
 You can define your own domain name mappings for local DNS resolution. This is useful for creating user-friendly names for network devices, defining domain names for local services, or creating your own DNS zone.
 
-Custom DNS supports multiple record types (A, AAAA, CNAME, TXT, SRV) and provides automatic reverse DNS lookups for defined IP addresses.
+Custom DNS supports multiple record types (A, AAAA, CNAME, TXT, SRV, HTTPS, SVCB) and provides automatic reverse DNS lookups for defined IP addresses.
 
 | Parameter           | Type                                                   | Mandatory | Default value | Description                                                                                |
 | ------------------- | ------------------------------------------------------ | --------- | ------------- | ------------------------------------------------------------------------------------------ |
@@ -644,11 +644,28 @@ The zone file supports standard DNS zone file syntax including:
 
 For records defined using the `zone` parameter, the `customTTL` parameter is unused. Instead, the TTL is defined in the zone directly.
 
-custom DNS answers queries for `A`, `AAAA`, `CNAME`, `TXT` and `SRV` records. Other record types
-that are valid in a zone file (for example `SOA`, `NS`, `MX`, `CAA`, `HTTPS`/`SVCB` or the DNSSEC
+custom DNS answers queries for `A`, `AAAA`, `CNAME`, `TXT`, `SRV`, `HTTPS` and `SVCB` records. Other
+record types that are valid in a zone file (for example `SOA`, `NS`, `MX`, `CAA` or the DNSSEC
 records of a signed zone) may be present in the zone, but they are not answered by custom DNS: a
 query for such a type gets the same response as a query for a type that is not defined for the name
 (an empty answer, or the query is forwarded upstream when `filterUnmappedTypes` is `false`).
+
+`HTTPS` and `SVCB` records ([RFC 9460](https://www.rfc-editor.org/rfc/rfc9460)) are returned as written
+in the zone, with all their SvcParams. Browsers send an `HTTPS` query next to `A`/`AAAA` for every
+name, so this lets local services announce HTTP/3 support, an alternate port or address hints:
+
+!!! example
+
+    ```yaml
+    customDNS:
+      zone: |
+        $ORIGIN example.com.
+        app 3600 A     192.168.1.10
+        app 3600 HTTPS 1 . alpn="h3,h2" ipv4hint=192.168.1.10
+    ```
+
+When `AAAA` queries are [filtered](#filtering), the `ipv6hint` SvcParam is removed from these answers
+too.
 
 ### CNAME Resolution
 
@@ -1045,7 +1062,7 @@ With following parameters you can tune the caching behavior:
 
 | Parameter                     | Type            | Mandatory | Default value | Description                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ----------------------------- | --------------- | --------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| caching.minTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (min value). If <=0, use response's TTL, if >0 use this value, if TTL is smaller                                                                                                                                                                                                                                                                                            |
+| caching.minTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (min value). If <=0, use response's TTL, if >0 use this value, if TTL is smaller. With [DNSSEC validation](#dnssec-validation), a response that gets the AD flag is held in the cache for this time too, and sent to clients with no more than the TTL that its zone signed                                                                                                                                                                                                                                                                                            |
 | caching.maxTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (max value). If <0, do not cache responses. If 0, use TTL. If > 0, use this value, if TTL is greater                                                                                                                                                                                                                                                                        |
 | caching.maxItemsCount         | int             | no        | 0 (unlimited) | Max number of cache entries (responses) to be kept in cache (soft limit). Default (0): unlimited. Useful on systems with limited amount of RAM.                                                                                                                                                                                                                                                                |
 | caching.prefetching           | bool            | no        | false         | if true, blocky will preload DNS results for often used queries (default: names queried more than 5 times in a 2 hour time window). Results in cache will be loaded again on their expire (TTL). This improves the response time for often used queries, but significantly increases external traffic. It is recommended to increase "minTime" to reduce the number of prefetch queries to external resolvers. |
@@ -1125,10 +1142,11 @@ Synchronization is disabled if no address is configured.
 Blocky can expose various metrics for prometheus. To use the prometheus feature, the HTTP listener must be enabled (
 see [Basic Configuration](#basic-configuration)).
 
-| Parameter         | Mandatory | Default value | Description                         |
-| ----------------- | --------- | ------------- | ----------------------------------- |
-| prometheus.enable | no        | false         | If true, enables prometheus metrics |
-| prometheus.path   | no        | /metrics      | URL path to the metrics endpoint    |
+| Parameter                    | Mandatory | Default value | Description                         |
+| ---------------------------- | --------- | ------------- | ----------------------------------- |
+| prometheus.enable            | no        | false         | If true, enables prometheus metrics |
+| prometheus.path              | no        | /metrics      | URL path to the metrics endpoint    |
+| prometheus.enableClientLabel | no        | true          | If true, the client name (or IP) is used as the `client` label on `blocky_query_total` and `blocky_client_response_total`. Set to `false` to collapse the label to a single `unknown` value (see [Prometheus](prometheus_grafana.md#prometheus-export)). |
 
 !!! example
 
@@ -1136,6 +1154,7 @@ see [Basic Configuration](#basic-configuration)).
     prometheus:
       enable: true
       path: /metrics
+      enableClientLabel: true
     ```
 
 ## Statistics
@@ -1221,6 +1240,17 @@ You can select one of following query log types:
 - `dnstap`: export client DNS query/response events via [dnstap](https://dnstap.info/) (Frame Streams over Unix socket or TCP)
 - `none`: do not log any queries
 
+#### Database query log
+
+The database targets (`mysql`, `postgresql`, `timescale` and `sqlite`) buffer entries in memory and write them in batches, so DNS answers never wait on the database.
+
+- If the database is slow or can't be opened (unreachable, wrong credentials, a schema that can't be migrated), blocky keeps the entries and retries in the background until they are written. This includes startup: such a database doesn't make blocky fall back to the console, though a malformed `target` still does.
+- On shutdown, blocky writes what is left within its 10-second shutdown timeout, and logs how many entries it had to drop.
+- A write that fails at commit is retried, although the database may have stored it: those entries are then stored again.
+- Client names are stored as valid UTF-8 without control characters, cut to 191 characters. On MySQL and MariaDB, give the database the `utf8mb4` character set, which the table inherits; names it can't store are refused, and finding refused rows takes extra writes.
+- On MySQL and MariaDB the driver sets no time limit on a commit. Add `readTimeout` to the `target` (e.g. `readTimeout=1m`) to have a connection that stops answering dropped and retried; no statement can then run longer than that, the retention cleanup included.
+- Blocky holds about 32 MiB of entries in memory at most. Entries beyond that, and rows the database refuses, are dropped and counted in `blocky_query_log_entries_dropped_total` (see [Prometheus](prometheus_grafana.md)).
+
 #### SQLite query log
 
 The `sqlite` target stores the query log in a single local file (set via `queryLog.target`, e.g. `/var/lib/blocky/querylog.db`) — no external database is required. Blocky creates the file and its parent directory automatically.
@@ -1292,12 +1322,13 @@ Configuration parameters:
 | queryLog.type             | enum (mysql, postgresql, timescale, sqlite, csv, csv-client, console, dnstap, none (see above)) | no        |               | Type of logging target. Console if empty                                                      |
 | queryLog.target           | string                                                                               | no        |               | directory for writing the logs (for csv), database file path (for sqlite), database url (for mysql, postgresql or timescale), or dnstap socket address (`unix:…`, `tcp://…`, or bare `/path`); supports `file:` for database URLs — see [Redis tip](#redis) |
 | queryLog.logRetentionDays | int                                                                                  | no        | 0             | if > 0, deletes log files/database entries which are older than ... days; not used for dnstap   |
-| queryLog.creationAttempts | int                                                                                  | no        | 3             | Max attempts to create specific query log writer                                              |
+| queryLog.creationAttempts | int                                                                                  | no        | 3             | Max attempts to create specific query log writer; an unreachable database is retried in the background instead (see [Database query log](#database-query-log)) |
 | queryLog.creationCooldown | duration format                                                                      | no        | 2s            | Time between the creation attempts                                                            |
 | queryLog.fields           | list enum (clientIP, clientName, responseReason, responseAnswer, question, duration) | no        | all           | which information should be logged; ignored for dnstap                                        |
-| queryLog.flushInterval    | duration format                                                                      | no        | 30s           | Interval to write buffered entries in bulk to the database (mysql/postgresql/timescale/sqlite) or dnstap socket batching |
+| queryLog.flushInterval    | duration format                                                                      | no        | 30s           | Interval to write buffered entries in bulk to the database (mysql/postgresql/timescale/sqlite; also as soon as 1,000 are buffered) or dnstap socket batching |
 | queryLog.ignore.sudn      | bool                                                                                 | no        | false         | if true, queries answered as Special Use Domain Names (SUDN) are not logged                   |
 | queryLog.ignore.domains   | list of string                                                                       | no        |               | domains excluded from the query log; each entry is matched against the query name as an exact domain, a `*.wildcard`, or a `/regex/` (exact domains and wildcards are stored as hashes, see [Storage of entries](#storage-of-entries)) |
+| queryLog.ignore.clients   | list of string                                                                       | no        |               | clients excluded from the query log; each entry is a client IP, a CIDR, or a client name, which can use `*` and `?` wildcards as in `clientGroupsBlock`. Their queries are still resolved, filtered and counted in the metrics |
 
 !!! hint
 
@@ -1371,6 +1402,23 @@ Parsing is handled not by Blocky, but third-party libraries, therefore the full 
           - "db._dns-sd._udp.home"
           - "/\\.in-addr\\.arpa$/"
           - "apple.com"
+    ```
+
+!!! example
+    **Ignore noisy clients**
+
+    A router or access point that checks its internet connection every few seconds can fill the log.
+    Its queries are still answered and filtered as usual; they just aren't written to the log.
+
+    ```yaml
+    queryLog:
+      type: mysql
+      target: 'username:password@tcp(localhost:3306)/blocky_query_log'
+      ignore:
+        clients:
+          - 192.168.178.1      # client IP
+          - 192.168.178.64/28  # CIDR
+          - "*-ap"             # client name, wildcards allowed
     ```
 
 ## Hosts file
@@ -1482,11 +1530,18 @@ When DNSSEC validation is enabled, Blocky will:
 - Set the DNSSEC OK (DO) bit on all upstream queries to request DNSSEC records
 - Validate cryptographic signatures (RRSIG records) in DNS responses
 - Verify the chain of trust from root to the queried domain using DNSKEY and DS records
-- Validate authenticated denial of existence using NSEC/NSEC3 records for NXDOMAIN and NODATA responses
-- Validate wildcard expansions according to RFC 4035 §5.3.4
-- Return SERVFAIL for responses with invalid DNSSEC signatures (Bogus)
+- Validate authenticated denial of existence using NSEC/NSEC3 records for NXDOMAIN and NODATA responses, taking them only from the zone that holds the name (RFC 4035 §5.4, RFC 6840 §4.1). A NODATA response needs a record that lists neither the queried type nor CNAME (RFC 6840 §4.3)
+- Accept what a wildcard gives a name, a record set or the answer that it has no data of the type, only with the NSEC/NSEC3 proof that the name does not exist and that this wildcard is the one that answers for it, and an NXDOMAIN response only with the proof that no wildcard does (RFC 4035 §5.3.4 and §5.4, RFC 5155 §8.4, §8.7 and §8.8)
+- Validate every record set of the answer and authority sections. The response has the result of its answer, the lowest of the record sets that answer the question. Every other record set that it carries must be authentic beside a Secure answer, and none of them may fail validation, or the response is refused as Bogus (RFC 4035 §3.2.3)
+- Accept as the answer only the records that answer the question: those of the queried name and type, or the CNAME chain that leads to them, with a response code that fits. For a DS query, the CNAME record of the queried name is the answer too if the response holds nothing else: a name that has a CNAME record has no other data, so it is no delegation (RFC 1034 §3.6.2). A response that goes on to the target of the CNAME must hold the DS records of the target or the proof that it has none
+- Leave an NS record set without signature in the authority section, which some forwarders add to their answers, out of the validation instead of failing the response for it, and remove it from a response that gets the AD flag
+- Return the answer to a query for RRSIG records without validating it, and without the AD flag: nothing signs these records
+- Return SERVFAIL for responses that fail validation (Bogus): those with invalid DNSSEC signatures and, for a name below a trust anchor, those whose validation cannot be completed, for example because a DNSKEY or DS lookup fails (RFC 4035 §5.5). Before that, the upstream is asked for the response once more (see [Validation Results](#validation-results))
+- Return the data without validating it, and without the AD flag, to a client that set the Checking Disabled (CD) bit, since that client validates itself (RFC 4035 §3.2.2)
 - Set the Authenticated Data (AD) flag only after successful validation
-- Add Extended DNS Error (EDE) codes per RFC 8914 when validation fails
+- Remove the records of the additional section, except the EDNS OPT record, from a response that gets the AD flag: nothing validates them, and the flag does not cover them (RFC 4035 §3.2.3)
+- Send no record set of a response that gets the AD flag with a longer TTL than its signature allows: the TTL that the zone signed, and no longer than the time until the signature expires (RFC 4035 §5.3.3). This bounds the TTL that the client gets, not the time for which Blocky's own cache holds the response: that is set by `caching.minTime` and `caching.maxTime`, and a cached response is validated again every time it is served
+- Add the Extended DNS Error (EDE) code per RFC 8914 that says why validation failed (see [Validation Results](#validation-results))
 
 Independently of this setting, Blocky normalizes every response against the DNSSEC-related bits of the query it answers, because the client's DO bit is not necessarily the one used towards the upstream:
 
@@ -1518,9 +1573,9 @@ DNSSEC validation protects against:
 | Parameter                 | Type          | Mandatory | Default value | Description                                                                                       |
 | ------------------------- | ------------- | --------- | ------------- | ------------------------------------------------------------------------------------------------- |
 | dnssec.validate           | bool          | no        | false         | Enable DNSSEC validation                                                                          |
-| dnssec.maxChainDepth      | uint          | no        | 10            | Maximum domain label depth for chain of trust validation (DoS protection)                         |
-| dnssec.cacheExpirationHours | uint        | no        | 1             | How long to cache validation results in hours                                                     |
-| dnssec.maxUpstreamQueries | uint          | no        | 30            | Maximum upstream DNS queries per validation request (DoS protection)                              |
+| dnssec.maxChainDepth      | uint          | no        | 10            | Maximum number of zones in a chain of trust below its trust anchor (DoS protection)               |
+| dnssec.cacheExpirationHours | uint        | no        | 1             | How long to cache validation results at most, in hours. What validation found about a zone is dropped earlier, when the TTL or the signature of the records that proved it ends |
+| dnssec.maxUpstreamQueries | uint          | no        | 30            | Maximum upstream DNS queries (DNSKEY/DS lookups) that the validation for one client query makes (DoS protection) |
 | dnssec.maxNSEC3Iterations | uint          | no        | 150           | Maximum NSEC3 hash iterations allowed (DoS protection, per RFC 5155 §10.3)                        |
 | dnssec.clockSkewToleranceSec | uint       | no        | 3600          | Clock skew tolerance in seconds for signature validation (per RFC 6781 §4.1.2)                    |
 | dnssec.trustAnchors       | string array  | no        | []            | Custom trust anchors (DNSKEY or DS records). Empty array uses built-in root trust anchors         |
@@ -1529,9 +1584,10 @@ DNSSEC validation protects against:
 
 DNSSEC validation can be computationally expensive and requires additional DNS queries. Blocky includes several protections against DoS attacks:
 
-- **maxChainDepth**: Limits validation depth for deeply nested domains (e.g., prevents validation of `a.b.c.d.e.f.g.h.i.j.example.com`)
-- **maxUpstreamQueries**: Limits the number of upstream queries (DNSKEY/DS lookups) per validation to prevent query amplification
+- **maxChainDepth**: Limits the chain of delegated zones that validation follows below a trust anchor. Labels that are no zone of their own, like those of `a.b.c.d.e.f.g.h.i.j.example.com` inside the zone `example.com`, are not counted: `maxUpstreamQueries` bounds the lookups for them
+- **maxUpstreamQueries**: Limits the number of upstream queries (DNSKEY/DS lookups) that the validation for one client query makes, to prevent query amplification. A response that is asked for a second time (see [Validation Results](#validation-results)) is validated with the queries that the first validation left
 - **maxNSEC3Iterations**: Limits NSEC3 hash iterations to prevent CPU exhaustion attacks
+- **Work per client query**: Makes at most 8 tries, each of one signature with one key, to verify one record set, and for one client query verifies at most 128 signatures and computes at most 128 NSEC3 hashes. The DNSKEY and DS lookups made for the response count towards these limits, and so does the validation of a response that is asked for a second time. The limits are not configurable. A response that needs more is Bogus, and what its validation finds after it ran out is not cached
 - **Validation caching**: Caches validation results to avoid repeated expensive validations
 
 ### Clock Skew Tolerance
@@ -1563,10 +1619,63 @@ Blocky classifies DNSSEC validation results into four categories:
 
 | Result          | Description                                                          | Response Handling                        |
 | --------------- | -------------------------------------------------------------------- | ---------------------------------------- |
-| **Secure**      | Valid DNSSEC signatures and complete chain of trust                  | AD flag set, response returned           |
-| **Insecure**    | Domain is not signed with DNSSEC (no RRSIG records)                  | AD flag cleared, response returned       |
-| **Bogus**       | Invalid DNSSEC signatures or broken chain of trust                   | SERVFAIL returned with EDE code `6 (DNSSEC Bogus)`, response type `BOGUS` |
-| **Indeterminate** | Validation could not be completed (e.g., network errors, budget exceeded) | AD flag cleared, response returned |
+| **Secure**      | Valid DNSSEC signatures and complete chain of trust for every part of the response | AD flag set, response returned           |
+| **Insecure**    | The domain, or a part of the answer such as the target of a CNAME, is in a zone that its parent zone proves to be unsigned, or is a name that does not exist in a range that NSEC3 Opt-Out leaves open for unsigned delegations (RFC 5155 §9.2) | AD flag cleared, response returned       |
+| **Bogus**       | Invalid DNSSEC signatures or broken chain of trust, missing signatures or proofs in a signed zone, records that do not answer the question, a validation that needs more work than its limits allow (see [DoS Protection](#dos-protection)), or, for a name below a trust anchor, a validation that cannot be completed because a DNSKEY or DS lookup fails (RFC 4035 §5.5) | SERVFAIL returned with the EDE code that says why (see below), response type `BOGUS` |
+| **Indeterminate** | No trust anchor is above the name, so nothing says whether its zone is signed (RFC 4033 §5). This needs custom trust anchors without one for the root: no lookup is made for such a name | AD flag cleared, response returned |
+
+Many validation failures are transient (RFC 4035 §4.7): a response that fails validation says that the response is
+bad, not that the name is. A resolver may leave out a part of what a zone sent in one response and send it whole in
+the next, and a query whose response lacks NSEC records of the proof that a name or type does not exist must be sent
+again (RFC 4035 §5.4). So before Blocky answers SERVFAIL, it asks the upstream for the response once more, not its
+own cache, which holds the one that failed, and validates the second response. What that validation finds is what
+the client gets:
+
+- Both validations together stay within the limits of one (see [DoS Protection](#dos-protection)), and a response
+  whose validation ran out of one of them is not asked for again.
+- A response is not asked for again either when a DNSKEY or DS lookup of its validation ended without a reply,
+  whatever else is wrong with the response: asking again would make that lookup again and wait for it again. The
+  upstream made its own tries for it (RFC 9520 §3.1), and the client gets its SERVFAIL after one wait for them.
+- The cache holds the second response in the place of the first, if it is one that can be cached.
+- A query that fails validation twice, because its second response failed too or did not come, or once for want of
+  a reply to a lookup, is answered SERVFAIL for the next second, with the EDE code of that failure, without
+  further upstream queries and without validating again (RFC 4035 §4.7, RFC 9520 §3.2 and §3.4). Each time it
+  fails so again within a minute after that, with no response that validated in between, the time doubles, up to a
+  minute: a failure that passes costs a second, and one that stays is asked once a minute. The two times are not
+  configurable. Blocky keeps up to 1000 such queries, each for the upstream group of its client and in the form in
+  which it was sent: a query for the same name and type with other flags, another class or other EDNS data is
+  asked as usual, and so is one of a client that sets the CD bit. A validation that ran out of its limits (see
+  [DoS Protection](#dos-protection)) is not kept. Other names of a zone that fails validation cost two upstream
+  queries and two validations each.
+- With [DNS64](#dns64), a synthesized AAAA response for a name in a signed zone fails validation when the cache
+  serves it again: it comes back as an upstream response without signatures. It is then asked again and synthesized
+  anew, for every query.
+
+Validation needs an upstream resolver that passes on every DNSSEC record of an answer. When a resolver leaves a part
+of a proof out of both responses, the query is answered SERVFAIL although the zone is signed correctly, and nothing
+that Blocky could ask differently changes that.
+
+A DNSKEY or DS lookup fails when it gets no reply, or a reply that does not answer it: a truncated one, one with
+an error code such as SERVFAIL, one without the DNSKEY records of the zone, or, for DS records, one with neither
+the records nor NSEC/NSEC3 records that deny them. Blocky asks once more for a reply that came and did not answer,
+within `maxUpstreamQueries`. A lookup whose two tries both got such a reply is followed by the second ask for the
+response, as any validation failure is; a lookup whose first or second try got no reply is not. Blocky caches
+nothing of a zone for a lookup that failed: only the query that needed it gets SERVFAIL, and the next query, after
+the refusal described above, validates again. Records that came and do not verify are different: when the last
+validation for a query finds them so, their zone is Bogus for a minute. The EDE code of the SERVFAIL tells the
+reason, for the response that was validated last:
+
+| EDE code                           | Reason                                                                                         |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `22 (No Reachable Authority)`      | A DNSKEY or DS lookup got no reply from the upstream: an error or a timeout                    |
+| `23 (Network Error)`               | The reply to a DNSKEY or DS lookup came truncated, or the reply to a DS lookup had an error code such as SERVFAIL or REFUSED |
+| `9 (DNSKEY Missing)`               | The reply to a DNSKEY lookup had an error code such as SERVFAIL, or did not hold the DNSKEY records of the zone |
+| `12 (NSEC Missing)`                | The reply to a DS lookup held neither the DS records nor NSEC/NSEC3 records that deny them     |
+| `10 (RRSIGs Missing)`              | A record set of a signed zone came without signature                                           |
+| `7 (Signature Expired)`            | Every signature of a record set verifies, and has expired                                      |
+| `8 (Signature Not Yet Valid)`      | Every signature of a record set verifies, and is not yet valid                                 |
+| `1 (Unsupported DNSKEY Algorithm)` | Every signature of a record set is of an algorithm, or names a key, that blocky cannot verify with |
+| `6 (DNSSEC Bogus)`                 | Any other failure, also a record set whose signatures fail for different reasons               |
 
 A `BOGUS` result means blocky could not obtain a trustworthy answer, so it counts as an **error**
 in the [statistics](#statistics) — not as a block. A domain whose operator has misconfigured DNSSEC
@@ -1599,6 +1708,11 @@ Trust anchors can be specified in two formats:
 !!! warning
     Specifying custom trust anchors **replaces** the default root trust anchors. If you need to validate both public domains and private zones, you must include both the root trust anchors and your custom anchors.
 
+With a trust anchor for a zone and another for a zone below it, the closest one decides: the data of the lower zone and the zones below it is validated through the lower trust anchor alone, and neither signatures nor proofs of non-existence from a zone above it are accepted for that data. RFC 6840 §5.10 leaves this choice to the validator and suggests accepting any trust anchor that succeeds; Blocky follows the "closest encloser" policy of its Appendix C.1, as Unbound does. Two consequences:
+
+- A lower trust anchor that is out of date makes its zone fail validation, even where the chain of trust from the root would validate it.
+- Trust anchors apply to every client group. If some clients are sent to upstreams that serve the public records of a name that has a trust anchor for a private zone (split horizon), those records fail validation for them.
+
 ### Supported Algorithms
 
 Blocky supports the following DNSSEC algorithms per RFC 8624:
@@ -1606,12 +1720,16 @@ Blocky supports the following DNSSEC algorithms per RFC 8624:
 | Algorithm | ID | Status | Security Level |
 | --------- | -- | ------ | -------------- |
 | RSASHA1   | 5  | Deprecated (still supported) | Weak |
+| RSASHA1-NSEC3-SHA1 | 7 | Deprecated (still supported) | Weak |
 | RSASHA256 | 8  | Recommended | Moderate |
 | RSASHA512 | 10 | Recommended | Moderate |
 | ECDSAP256SHA256 | 13 | Recommended | Strong |
 | ECDSAP384SHA384 | 14 | Recommended | Strong |
 | ED25519   | 15 | Recommended | Very Strong |
-| ED448     | 16 | Recommended | Strongest |
+
+Signatures of other algorithms, ED448 (16) among them, do not verify.
+
+RSASHA256 and RSASHA512 keys are used with public exponents up to 2^32+1, RSASHA1 and RSASHA1-NSEC3-SHA1 keys with exponents up to 2^31-1. A signature made with a larger exponent does not verify, and a zone whose DS records name only keys with larger exponents, all of them in its DNSKEY record set, is treated as Insecure.
 
 Blocky automatically selects the strongest available algorithm when multiple signatures are present, providing protection against algorithm downgrade attacks per RFC 6840 §5.11.
 
@@ -1721,7 +1839,7 @@ Blocky exposes Prometheus metrics for DNSSEC validation:
 
 - Increase `maxUpstreamQueries` for domains with complex delegation chains
 - Check if upstream servers are slow to respond (may require multiple retries)
-- Increase `maxChainDepth` for deeply nested subdomains
+- Increase `maxChainDepth` for names below a long chain of delegated zones
 
 **Problem**: Signatures rejected as "expired" or "not yet valid" despite being valid
 

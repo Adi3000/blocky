@@ -35,6 +35,7 @@ Following metrics will be exported:
 | blocky_rate_limit_cap_exhausted_total            | Counter of queries dropped because the rate limiter bucket store was full |
 | blocky_rate_limit_active_buckets                 | Gauge of token buckets (≈ distinct clients) currently tracked by the rate limiter |
 | blocky_dnstap_frames_dropped_total               | Counter of dnstap frames dropped because the internal buffer is full - non-zero values indicate the collector is slow or unreachable |
+| blocky_query_log_entries_dropped_total           | Counter of query log entries dropped instead of written, partitioned by reason: `queue_full` (the writer fell behind), `buffer_full` (the database was slow or unreachable for too long), `rejected` (the database refused the row), `shutdown` (not written before blocky stopped; logged too, since nothing scrapes it by then) |
 
 !!! note "`reason` label for blocked responses"
 
@@ -42,6 +43,15 @@ Following metrics will be exported:
     group names only (e.g. `BLOCKED (ads)`), **not** the matched rule. The full reason including the
     matched rule (e.g. `BLOCKED (ads: *.docler.com)`) is still available in the [query log](configuration.md#query-logging).
     This avoids unbounded metric cardinality when large deny lists are used.
+
+!!! note "`reason` label for DNSSEC validation failures"
+
+    Responses that fail DNSSEC validation (`response_type="BOGUS"`) have the kind of failure as the `reason`
+    label of `blocky_response_total`: `DNSSEC validation failed: ` followed by the name of the Extended DNS
+    Error of the response, e.g. `DNSSEC validation failed: No Reachable Authority` or
+    `DNSSEC validation failed: DNSSEC Bogus` (see [Validation Results](configuration.md#validation-results)).
+    The one value that the label had before, `DNSSEC validation failed: bogus signatures`, is no longer used.
+    The full reason, such as the lookup that failed, is in the [query log](configuration.md#query-logging).
 
 !!! note "`client` label cardinality"
 
@@ -52,8 +62,16 @@ Following metrics will be exported:
     the set of `client` label values can grow effectively unbounded over time. Consider this before
     scraping/retaining these metrics on such networks.
 
-    Blocky has no option to drop the label yet, so the mitigation is on the Prometheus side: drop the
-    affected metrics at scrape time when you do not need the per-client breakdown.
+    When DoH is enabled, the client name is also taken directly from the request URL (the path
+    segment in `/dns-query/<clientID>` or the `id-` host prefix) and is therefore client-controlled:
+    any client that can reach the DoH endpoint can mint arbitrary `client` label values. Set
+    `prometheus.enableClientLabel: false` (see [Prometheus](configuration.md#prometheus)) to collapse
+    the label to a single `unknown` value, keeping the metric names and label keys intact while
+    bounding cardinality. This is recommended when blocky is reachable from untrusted networks or
+    serves an unbounded set of clients.
+
+    Alternatively, the mitigation is on the Prometheus side: drop the affected metrics at scrape time
+    when you do not need the per-client breakdown.
 
     ```yaml
     metric_relabel_configs:
@@ -95,14 +113,16 @@ The dashboard is organized in sections (overview, traffic, latency, blocking & l
 rate limiting, Go runtime) and uses only Grafana core panels, so no additional plugins are needed. The "Blocking
 control" buttons in the overview section enable or temporarily disable blocking via the blocky API.
 
+Client filtering is available in the **Traffic** section using the new `blocky_client_response_total` metric.
+The dashboard has been converted to Grafana's v2 format to support the section-level client selector.
+
 When importing the dashboard, set the "blocky API URL" input to the address under which your browser can reach the
 blocky HTTP API (e.g. `https://blocky.example.com` or `http://192.168.1.2:4000`) — it is used by the blocking
 control buttons.
 
 ### Requirements
 
-- Grafana 10.2 or newer: the blocking control buttons use canvas button elements with API calls. All other panels
-  also work with older Grafana versions.
+- Grafana 13 or higher for the v2 dashboard and client filtering in the Traffic section.
 - blocky newer than v0.31 if Grafana is served from a different origin than the blocky API: older blocky versions
   reject the CORS preflight which Grafana sends for the blocking control buttons. Alternatively, expose the blocky
   API on the same origin as Grafana through your reverse proxy.
