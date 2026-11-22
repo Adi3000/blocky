@@ -1,0 +1,114 @@
+name: Sync upstream for adi3000
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync-and-publish:
+    name: Sync fork branch and publish image
+    if: github.repository == 'Adi3000/blocky'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check for a newer upstream tag
+        id: latest-tag
+        shell: bash
+        run: |
+          git remote add upstream https://github.com/0xERR0R/blocky.git
+          git fetch --prune origin --tags
+          git fetch --prune upstream main 'refs/tags/v*:refs/tags/upstream-v*'
+
+          upstream_tag="$(git for-each-ref \
+            --sort=-creatordate \
+            --format='%(refname:strip=2) %(creatordate:unix)' \
+            refs/tags/upstream-v* | head -n 1)"
+          fork_tag="$(git for-each-ref \
+            --sort=-creatordate \
+            --format='%(refname:strip=2) %(creatordate:unix)' \
+            refs/tags/v*-adi3000 | head -n 1)"
+
+          upstream_tag_name="${upstream_tag% *}"
+          upstream_tag_name="${upstream_tag_name#upstream-}"
+          upstream_tag_timestamp="${upstream_tag##* }"
+          fork_tag_timestamp="${fork_tag##* }"
+
+          if [[ -z "${upstream_tag_name}" ]]; then
+            echo "No v* tags were found in 0xERR0R/blocky."
+            echo "continue=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "${fork_tag}" && "${upstream_tag_timestamp}" -le "${fork_tag_timestamp}" ]]; then
+            echo "The newest upstream tag ${upstream_tag_name} is not newer than the newest Adi3000 tag ${fork_tag}."
+            echo "continue=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          adi_tag_name="${upstream_tag_name}-adi3000"
+          echo "New upstream tag found: ${upstream_tag_name}"
+          echo "upstream_tag=${upstream_tag_name}" >> "$GITHUB_OUTPUT"
+          echo "adi_tag=${adi_tag_name}" >> "$GITHUB_OUTPUT"
+          echo "continue=true" >> "$GITHUB_OUTPUT"
+
+      - name: Sync fork branch with upstream main
+        if: steps.latest-tag.outputs.continue == 'true'
+        shell: bash
+        run: |
+          git fetch --prune upstream main
+          git push --force origin upstream/main:refs/heads/fb-adi3000
+
+      - name: Create and push Adi3000 tag
+        if: steps.latest-tag.outputs.continue == 'true'
+        shell: bash
+        run: |
+          upstream_tag="${{ steps.latest-tag.outputs.upstream_tag }}"
+          adi_tag="${{ steps.latest-tag.outputs.adi_tag }}"
+          git checkout --detach "refs/tags/upstream-${upstream_tag}"
+          git tag "${adi_tag}"
+          git push origin "refs/tags/${adi_tag}"
+
+      - name: Check out tag for image build
+        if: steps.latest-tag.outputs.continue == 'true'
+        shell: bash
+        run: git checkout --detach "refs/tags/${{ steps.latest-tag.outputs.adi_tag }}"
+
+      - name: Set up Docker Buildx
+        if: steps.latest-tag.outputs.continue == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        if: steps.latest-tag.outputs.continue == 'true'
+        uses: docker/login-action@v4.8.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push image
+        if: steps.latest-tag.outputs.continue == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64
+          push: true
+          tags: |
+            adi3000/blocky:${{ steps.latest-tag.outputs.adi_tag }}
+          build-args: |
+            VERSION=${{ steps.latest-tag.outputs.adi_tag }}
+            BUILD_TIME=${{ steps.latest-tag.outputs.adi_tag }}
+            DOC_PATH=${{ steps.latest-tag.outputs.adi_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
